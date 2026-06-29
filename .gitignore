@@ -1,0 +1,16 @@
+# Generated working artifacts (per-run; not part of the skill)
+failed_specs.csv
+failed_specs_unique.csv
+failures_raw.json
+mapping.json
+*.clean
+issue.md
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Editor / OS
+.DS_Store
+*.swp
