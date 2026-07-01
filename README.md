@@ -100,15 +100,33 @@ up.
 SKILL.md                          # the skill: workflow Claude follows
 README.md
 scripts/
-  pipeline_failed_specs.py        # → failed_specs.csv + failed_specs_unique.csv
-  extract_failures.py             # → failures_raw.json (root failure per spec)
+  pipeline_failed_specs.py        # → failed_specs_<pipeline>.csv + failed_specs_unique_<pipeline>.csv
+  extract_failures.py             # → failures_raw_<pipeline>.json (root failure per spec)
   annotate_failure_cause.py       # mapping.json → failure_cause column
 reference/
   failure_taxonomy.md             # signatures → cause labels + classification rules
   ticket_template.md              # structure for the GitLab issue
 examples/
   failed_specs_unique.example.csv # sample annotated output
+tests/                             # unit tests for the scripts (stdlib unittest, no deps)
 ```
+
+## Development
+
+Unit tests cover the parsing/classification logic in `scripts/` (log parsing,
+retry detection, spec-path resolution, CSV annotation) using only the
+standard library — no dependencies to install. Run them from the repo root:
+
+```bash
+python3 -m unittest discover -s tests -v
+```
+
+Tests use synthetic GitLab CI trace text (see `tests/fixtures.py`), not live
+`glab` calls, so they run offline and fast. When changing parsing logic in
+`pipeline_failed_specs.py` or `extract_failures.py`, add a fixture-based case
+rather than only testing against a live pipeline — that's what keeps
+regressions like the OOM-crash detection fix (see `CHANGELOG.md`) from
+resurfacing silently.
 
 ## License
 

@@ -7,7 +7,7 @@ description: >-
   offer to open a GitLab issue for the dominant cluster. Use when asked to
   investigate, analyze, triage, or summarize CI / pipeline test failures, or to
   classify why specs failed.
-version: 1.1.0
+version: 1.1.1
 ---
 
 # GitLab Pipeline Failure Analysis

@@ -5,6 +5,20 @@ All notable changes to this skill are documented here. Format follows
 [Semantic Versioning](https://semver.org/) and is tracked in the `version`
 field of [`SKILL.md`](SKILL.md)'s frontmatter.
 
+## [1.1.1] - 2026-07-01
+
+### Added
+- `tests/` — unit tests for `pipeline_failed_specs.py`, `extract_failures.py`,
+  and `annotate_failure_cause.py` (stdlib `unittest`, no dependencies). Covers
+  `[SPEC START]`/`[SPEC END]` parsing (including the OOM-crash/missing-output
+  case), retry detection, spec-path resolution, and CSV annotation. Run with
+  `python3 -m unittest discover -s tests -v`.
+
+### Fixed
+- `.gitignore` now matches the pipeline-suffixed working-artifact filenames
+  introduced in 1.1.0 (`failed_specs_*.csv`, `failures_raw_*.json`,
+  `mapping_*.json`) instead of only the old fixed names.
+
 ## [1.1.0] - 2026-07-01
 
 ### Changed
