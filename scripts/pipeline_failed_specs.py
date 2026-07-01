@@ -238,12 +238,23 @@ def parse_pipeline_id(arg):
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("pipeline", help="pipeline id or GitLab pipeline URL")
-    parser.add_argument("-o", "--output", default="failed_specs.csv", help="output CSV path (default: failed_specs.csv)")
-    parser.add_argument("-u", "--unique-output", default="failed_specs_unique.csv", help="unique-specs CSV path (default: failed_specs_unique.csv)")
+    parser.add_argument(
+        "-o", "--output", default=None,
+        help="output CSV path (default: failed_specs_<pipeline_id>.csv, so multiple "
+             "pipelines can be analyzed in the same folder without overwriting)",
+    )
+    parser.add_argument(
+        "-u", "--unique-output", default=None,
+        help="unique-specs CSV path (default: failed_specs_unique_<pipeline_id>.csv)",
+    )
     parser.add_argument("-p", "--project", default=DEFAULT_PROJECT, help=f"GitLab project path (default: {DEFAULT_PROJECT})")
     args = parser.parse_args()
 
     pipeline_id = parse_pipeline_id(args.pipeline)
+    if args.output is None:
+        args.output = f"failed_specs_{pipeline_id}.csv"
+    if args.unique_output is None:
+        args.unique_output = f"failed_specs_unique_{pipeline_id}.csv"
 
     sys.stderr.write(f"Fetching all jobs for pipeline {pipeline_id}...\n")
     all_jobs = fetch_all_jobs(args.project, pipeline_id)

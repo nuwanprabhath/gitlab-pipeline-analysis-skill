@@ -121,11 +121,17 @@ def main():
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     ap.add_argument("pipeline", help="pipeline id or GitLab pipeline URL")
-    ap.add_argument("-o", "--output", default="failures_raw.json")
+    ap.add_argument(
+        "-o", "--output", default=None,
+        help="output JSON path (default: failures_raw_<pipeline_id>.json, so multiple "
+             "pipelines can be analyzed in the same folder without overwriting)",
+    )
     ap.add_argument("-p", "--project", default=DEFAULT_PROJECT)
     args = ap.parse_args()
 
     pid = parse_pipeline_id(args.pipeline)
+    if args.output is None:
+        args.output = f"failures_raw_{pid}.json"
     sys.stderr.write(f"Fetching latest failed cypress jobs for pipeline {pid}...\n")
     jobs = latest_failed_cypress_jobs(args.project, pid)
     sys.stderr.write(f"  {len(jobs)} failed cypress job(s) (latest attempt).\n")

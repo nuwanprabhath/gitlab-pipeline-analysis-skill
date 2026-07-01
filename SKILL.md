@@ -2,11 +2,12 @@
 name: gitlab-pipeline-analysis
 description: >-
   Triage failed Cypress specs in a GitLab CI pipeline. Given a pipeline number or
-  URL, generate failed_specs.csv and failed_specs_unique.csv (the latter with a
-  failure_cause column), group the failures by root cause, and offer to open a
-  GitLab issue for the dominant cluster. Use when asked to investigate, analyze,
-  triage, or summarize CI / pipeline test failures, or to classify why specs failed.
-version: 1.0.0
+  URL, generate failed_specs_<pipeline>.csv and failed_specs_unique_<pipeline>.csv
+  (the latter with a failure_cause column), group the failures by root cause, and
+  offer to open a GitLab issue for the dominant cluster. Use when asked to
+  investigate, analyze, triage, or summarize CI / pipeline test failures, or to
+  classify why specs failed.
+version: 1.1.0
 ---
 
 # GitLab Pipeline Failure Analysis
@@ -27,6 +28,10 @@ Let `SKILL_DIR` be the directory containing this file. Run scripts as
 `python3 "$SKILL_DIR/scripts/<name>.py" ...`. Write CSVs/JSON to the user's
 current working directory (or a path they specify), not into the skill repo.
 
+All output filenames below are suffixed with the pipeline id by default
+(`_<pipeline>`) so analyzing several pipelines in the same folder never
+overwrites a previous run. Let `PID` be that pipeline id.
+
 ## Steps
 
 1. **Get the pipeline.** Accept a number or a full pipeline URL from the user.
@@ -36,28 +41,32 @@ current working directory (or a path they specify), not into the skill repo.
 2. **Generate the CSVs.**
    ```bash
    python3 "$SKILL_DIR/scripts/pipeline_failed_specs.py" <pipeline> \
-     -o failed_specs.csv -u failed_specs_unique.csv [-p <group/project>]
+     [-p <group/project>]
    ```
-   Produces `failed_specs.csv` (one row per failed spec per job/retry) and
-   `failed_specs_unique.csv` (deduped: `Failed spec, Passed on retry,
+   Defaults to writing `failed_specs_$PID.csv` and
+   `failed_specs_unique_$PID.csv` (override with `-o`/`-u` if needed).
+   `failed_specs_$PID.csv` has one row per failed spec per job/retry;
+   `failed_specs_unique_$PID.csv` is deduped (`Failed spec, Passed on retry,
    first_failed_job_url, Note`). Specs marked `Passed on retry: yes (...)` are
    FLAKY, not hard failures. Specs marked `Note: Unable to find outputs`
-   started running (per a `Running:` line) but never reached that job's
-   Cypress `(Run Finished)` summary table — the job likely crashed, timed out,
-   or was OOM-killed mid-spec, so pass/fail is unknown; call these out
-   separately rather than folding them into the failure-cause breakdown.
+   started (per a `[SPEC START]` marker) but the job never logged a matching
+   `[SPEC END]` — it likely crashed, timed out, or was OOM-killed mid-spec, so
+   pass/fail is unknown; call these out separately rather than folding them
+   into the failure-cause breakdown.
 
 3. **Extract root failures** (for classification):
    ```bash
    python3 "$SKILL_DIR/scripts/extract_failures.py" <pipeline> \
-     -o failures_raw.json [-p <group/project>]
+     [-p <group/project>]
    ```
-   This uses the LATEST attempt of each cypress job and records, per spec, the
+   Defaults to writing `failures_raw_$PID.json` (override with `-o`). This
+   uses the LATEST attempt of each cypress job and records, per spec, the
    first failing test and its error line plus all distinct error signatures.
 
-4. **Classify each unique spec.** Read `failures_raw.json` and apply
-   `reference/failure_taxonomy.md`. For each spec in `failed_specs_unique.csv`
-   decide a concise `failure_cause` label. Key judgement calls:
+4. **Classify each unique spec.** Read `failures_raw_$PID.json` and apply
+   `reference/failure_taxonomy.md`. For each spec in
+   `failed_specs_unique_$PID.csv` decide a concise `failure_cause` label. Key
+   judgement calls:
    - Distinguish a **root cause** from a **cascade** (e.g. a dropdown that never
      resolved makes later "element never found" / stepper assertions fail —
      those are cascades, label them as such).
@@ -67,12 +76,12 @@ current working directory (or a path they specify), not into the skill repo.
      investigation, so they don't inflate the headline cause.
    - Hedge honestly: use `(likely ...)` / `(likely upstream cascade)` when the
      captured error doesn't definitively pin the root.
-   Write your decisions to `mapping.json` as `{ "<spec>.cy.js": "<cause>" }`.
+   Write your decisions to `mapping_$PID.json` as `{ "<spec>.cy.js": "<cause>" }`.
 
 5. **Annotate the CSV.**
    ```bash
    python3 "$SKILL_DIR/scripts/annotate_failure_cause.py" \
-     --mapping mapping.json --csv failed_specs_unique.csv
+     --mapping "mapping_$PID.json" --csv "failed_specs_unique_$PID.csv"
    ```
    Re-run after edits; any spec missing from the mapping shows as
    `UNCLASSIFIED`, so resolve those before finishing.
@@ -96,18 +105,21 @@ current working directory (or a path they specify), not into the skill repo.
 
 ## Output recap
 
-- `failed_specs.csv` — per-job/retry rows.
-- `failed_specs_unique.csv` — deduped, now with `failure_cause`.
-- `failures_raw.json`, `mapping.json` — intermediate working files (safe to delete).
+- `failed_specs_$PID.csv` — per-job/retry rows.
+- `failed_specs_unique_$PID.csv` — deduped, now with `failure_cause`.
+- `failures_raw_$PID.json`, `mapping_$PID.json` — intermediate working files
+  (safe to delete). All filenames are suffixed with the pipeline id so
+  re-running for a different pipeline in the same folder doesn't clobber a
+  prior analysis.
 - Optional: a GitLab issue.
 
 ## Notes
 
 - Only cypress-run / cypress-priority jobs are parsed for specs; non-cypress job
-  failures (commitlint, sonarcloud, setup) appear in `failed_specs.csv` with an
-  empty spec — mention them but they don't get a `failure_cause`.
-- Specs with `Note: Unable to find outputs` had no Cypress summary-table entry
-  in that job's trace even though a `Running:` line shows they started —
-  outcome unknown (crash/timeout/OOM), not a confirmed failure.
+  failures (commitlint, sonarcloud, setup) appear in `failed_specs_$PID.csv`
+  with an empty spec — mention them but they don't get a `failure_cause`.
+- Specs with `Note: Unable to find outputs` had a `[SPEC START]` in that job's
+  trace but no matching `[SPEC END]` — outcome unknown (crash/timeout/OOM),
+  not a confirmed failure.
 - The taxonomy in `reference/failure_taxonomy.md` is editable: teams should add
   their own recurring signatures over time.

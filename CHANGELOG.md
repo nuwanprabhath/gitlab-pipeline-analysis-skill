@@ -5,6 +5,19 @@ All notable changes to this skill are documented here. Format follows
 [Semantic Versioning](https://semver.org/) and is tracked in the `version`
 field of [`SKILL.md`](SKILL.md)'s frontmatter.
 
+## [1.1.0] - 2026-07-01
+
+### Changed
+- `pipeline_failed_specs.py` and `extract_failures.py` now default their
+  output filenames to `failed_specs_<pipeline_id>.csv`,
+  `failed_specs_unique_<pipeline_id>.csv`, and
+  `failures_raw_<pipeline_id>.json` (previously fixed names with no pipeline
+  id). This lets multiple pipelines be analyzed in the same folder without
+  overwriting each other's output. Pass `-o`/`-u` explicitly to keep using a
+  fixed name.
+- `SKILL.md` workflow updated to use pipeline-suffixed filenames throughout,
+  including `mapping_<pipeline_id>.json`.
+
 ## [1.0.0] - 2026-07-01
 
 ### Fixed
