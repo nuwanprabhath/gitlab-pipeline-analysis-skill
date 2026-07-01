@@ -6,6 +6,7 @@ description: >-
   failure_cause column), group the failures by root cause, and offer to open a
   GitLab issue for the dominant cluster. Use when asked to investigate, analyze,
   triage, or summarize CI / pipeline test failures, or to classify why specs failed.
+version: 1.0.0
 ---
 
 # GitLab Pipeline Failure Analysis
@@ -39,8 +40,12 @@ current working directory (or a path they specify), not into the skill repo.
    ```
    Produces `failed_specs.csv` (one row per failed spec per job/retry) and
    `failed_specs_unique.csv` (deduped: `Failed spec, Passed on retry,
-   first_failed_job_url`). Specs marked `Passed on retry: yes (...)` are FLAKY,
-   not hard failures.
+   first_failed_job_url, Note`). Specs marked `Passed on retry: yes (...)` are
+   FLAKY, not hard failures. Specs marked `Note: Unable to find outputs`
+   started running (per a `Running:` line) but never reached that job's
+   Cypress `(Run Finished)` summary table — the job likely crashed, timed out,
+   or was OOM-killed mid-spec, so pass/fail is unknown; call these out
+   separately rather than folding them into the failure-cause breakdown.
 
 3. **Extract root failures** (for classification):
    ```bash
@@ -101,5 +106,8 @@ current working directory (or a path they specify), not into the skill repo.
 - Only cypress-run / cypress-priority jobs are parsed for specs; non-cypress job
   failures (commitlint, sonarcloud, setup) appear in `failed_specs.csv` with an
   empty spec — mention them but they don't get a `failure_cause`.
+- Specs with `Note: Unable to find outputs` had no Cypress summary-table entry
+  in that job's trace even though a `Running:` line shows they started —
+  outcome unknown (crash/timeout/OOM), not a confirmed failure.
 - The taxonomy in `reference/failure_taxonomy.md` is editable: teams should add
   their own recurring signatures over time.

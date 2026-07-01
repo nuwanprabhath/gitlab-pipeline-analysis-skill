@@ -3,8 +3,10 @@
 Extract all failed Cypress specs from a GitLab CI pipeline.
 
 For each failed job in the pipeline (including retries), this script
-downloads the job trace, parses the Cypress "(Run Finished)" summary
-table, and emits one CSV row per failed spec.
+downloads the job trace, parses the `[SPEC START]`/`[SPEC END]` markers CI
+wraps around each spec, and emits one CSV row per failed spec. Specs that
+started but never got an `[SPEC END]` (job crashed/timed out/OOM-killed
+mid-spec) are emitted too, with Note = "Unable to find outputs".
 
 Usage:
   ./pipeline_failed_specs.py <pipeline_id_or_url> [-o OUTPUT.csv] [-p PROJECT]
@@ -60,10 +62,15 @@ ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 GITLAB_LINE_PREFIX_RE = re.compile(
     r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z \S+ ?", re.MULTILINE
 )
-SPEC_ROW_RE = re.compile(r"^\s*│\s+([✖✔])\s+(.*?)\s*│\s*$")
-CONTINUATION_RE = re.compile(r"^\s*│\s+(\S.*?)\s*│\s*$")
-BORDER_ONLY_RE = re.compile(r"^[─┌┐└┘├┤\s]+$")
-SPEC_FILENAME_RE = re.compile(r"([A-Za-z0-9_+\-./]+\.cy\.(?:js|ts))")
+# CI wraps each spec with `[SPEC START] <path> | ...` / `[SPEC END]   <path> | ... | <symbol> <PASSED|FAILED>`.
+# These markers are per-spec and always present, unlike Cypress's own final
+# "(Run Finished)" summary table, which a job never prints if it dies mid-batch
+# (crash/timeout/OOM) — relying on that table alone silently drops real
+# failures and passes from any job that doesn't finish cleanly.
+SPEC_EVENT_RE = re.compile(
+    r"\[SPEC (START|END)\]\s+(\S+\.cy\.(?:js|ts))(?:[^\n]*?(✔ PASSED|✖ FAILED))?"
+)
+MISSING_OUTPUT_NOTE = "Unable to find outputs"
 
 
 def glab(path):
@@ -126,74 +133,88 @@ def clean_log(log):
     return log
 
 
-def parse_failed_specs(log):
-    """Return list of failed spec filenames found in the Cypress summary table."""
+def parse_spec_events(log):
+    """Walk a job's `[SPEC START]`/`[SPEC END]` markers in order.
+
+    Returns (order, status): `order` is the list of spec paths (full
+    repo-relative path, e.g. 'test/cypress/integration/run/foo.cy.js') in
+    first-seen order; `status` maps each path to 'PASSED', 'FAILED', or
+    'MISSING' (started but the job died — crash/timeout/OOM — before an END
+    was logged for it, so the outcome is unknown).
+    """
     log = clean_log(log)
-
-    # Use the last "(Run Finished)" in case the job retried internally
-    idx = log.rfind("(Run Finished)")
-    if idx < 0:
-        return []
-    section = log[idx:]
-    end = section.find("Recorded Run")
-    if end > 0:
-        section = section[:end]
-
-    merged = []
-    for line in section.split("\n"):
-        m = SPEC_ROW_RE.match(line)
-        if m:
-            symbol, content = m.group(1), m.group(2)
-            # Name is the first whitespace-delimited chunk; the rest is timing/stats columns
-            # (separated by 2+ spaces). Use re.split so short names with internal '-' survive.
-            name = re.split(r"\s{2,}", content, maxsplit=1)[0].strip()
-            merged.append([symbol, name])
-            continue
-        c = CONTINUATION_RE.match(line)
-        if c and merged:
-            frag = c.group(1)
-            if not BORDER_ONLY_RE.match(frag):
-                # Continuation lines only hold the trailing chars of a wrapped filename
-                merged[-1][1] = merged[-1][1] + frag.strip()
-
-    specs = []
-    for symbol, content in merged:
-        if symbol != "✖":
-            continue
-        m = SPEC_FILENAME_RE.search(content)
-        if m:
-            specs.append(m.group(1))
-    # Preserve order, deduplicate within a single job
-    seen = set()
-    unique = []
-    for s in specs:
-        if s not in seen:
-            seen.add(s)
-            unique.append(s)
-    return unique
+    order = []
+    status = {}
+    pending = None
+    for kind, spec, outcome in SPEC_EVENT_RE.findall(log):
+        if spec not in order:
+            order.append(spec)
+        if kind == "START":
+            if pending is not None and pending not in status:
+                status[pending] = "MISSING"
+            pending = spec
+        else:  # END
+            status[spec] = "FAILED" if outcome.startswith("✖") else "PASSED"
+            if pending == spec:
+                pending = None
+    if pending is not None and pending not in status:
+        status[pending] = "MISSING"
+    return order, status
 
 
-def resolve_spec_paths(spec_names, integration_dir=CYPRESS_INTEGRATION_DIR):
+def parse_failed_specs(log):
+    """Return failed spec basenames (e.g. 'foo.cy.js'), first-seen order,
+    based on `[SPEC END] ... FAILED` markers."""
+    order, status = parse_spec_events(log)
+    return [os.path.basename(s) for s in order if status.get(s) == "FAILED"]
+
+
+def find_missing_output_specs(log):
+    """Return spec basenames that started (`[SPEC START]`) but the job died
+    before logging their `[SPEC END]` — outcome unknown (crash/timeout/OOM)."""
+    order, status = parse_spec_events(log)
+    return [os.path.basename(s) for s in order if status.get(s) == "MISSING"]
+
+
+def parse_spec_full_paths(log):
+    """Return {basename: full_repo_relative_path} for every spec seen via
+    `[SPEC START]`/`[SPEC END]` markers in this job's trace."""
+    order, _status = parse_spec_events(log)
+    return {os.path.basename(s): s for s in order}
+
+
+def resolve_spec_paths(spec_names, integration_dir=CYPRESS_INTEGRATION_DIR, known_paths=None):
     """Map each bare spec filename (e.g. 'foo.cy.js') to its repo-relative path.
+
+    Prefers `known_paths` (collected from `[SPEC START]`/`[SPEC END]` markers
+    across the pipeline's own job traces — the exact path Cypress actually
+    used) and falls back to a local checkout lookup, then to a recursive glob.
 
     Returns (resolved, unresolved) where resolved is a list of
     'test/cypress/integration/<subdir>/<file>' strings in input order and
-    unresolved is a list of filenames we couldn't locate under integration_dir.
+    unresolved is a list of filenames we couldn't locate any other way.
     """
+    known_paths = known_paths or {}
     resolved, unresolved = [], []
-    if integration_dir is None or not Path(integration_dir).is_dir():
-        # No local checkout — emit recursive globs that Cypress can match without
-        # one. `test/cypress/integration/**/<name>` resolves at run time.
-        return [f"{SPEC_PATH_PREFIX}/**/{name}" for name in spec_names], []
+    have_checkout = integration_dir is not None and Path(integration_dir).is_dir()
     for name in spec_names:
-        matches = list(integration_dir.rglob(name))
-        if not matches:
-            unresolved.append(name)
+        if name in known_paths:
+            resolved.append(known_paths[name])
             continue
-        # Pick the shortest path in case the same basename appears more than once
-        match = min(matches, key=lambda p: len(p.parts))
-        rel = match.relative_to(integration_dir.parent.parent.parent)
-        resolved.append(str(rel).replace("\\", "/"))
+        if have_checkout:
+            matches = list(integration_dir.rglob(name))
+            if matches:
+                # Pick the shortest path in case the same basename appears more than once
+                match = min(matches, key=lambda p: len(p.parts))
+                rel = match.relative_to(integration_dir.parent.parent.parent)
+                resolved.append(str(rel).replace("\\", "/"))
+                continue
+        if not have_checkout:
+            # No local checkout and no known path — emit a recursive glob that
+            # Cypress can match without one.
+            resolved.append(f"{SPEC_PATH_PREFIX}/**/{name}")
+            continue
+        unresolved.append(name)
     return resolved, unresolved
 
 
@@ -241,8 +262,16 @@ def main():
 
     rows = []
     no_spec_jobs = []
-    # Track which specs failed in which job instances: {job_id: [spec, ...]}
+    missing_output_jobs = []
+    # Track which specs failed in which job instances: {job_id: [spec, ...]}.
+    # Specs whose output went missing are folded in here too, so the existing
+    # retry-detection / first-failed-job logic below picks them up for free.
     failed_specs_by_job_id = {}
+    # Specs that had at least one job attempt with no summary-table entry
+    missing_output_specs = set()
+    # Exact repo-relative spec paths seen via [SPEC START]/[SPEC END] markers,
+    # keyed by basename — the ground truth for re-run path resolution.
+    known_spec_paths = {}
 
     # Process newest-first so the CSV lists the latest retries at the top
     for job in sorted(failed_jobs, key=lambda j: j["created_at"], reverse=True):
@@ -251,15 +280,19 @@ def main():
         sys.stderr.write(f"  job {job_id} ({name})...\n")
         trace = fetch_job_trace(args.project, job_id)
         specs = parse_failed_specs(trace)
-        failed_specs_by_job_id[job_id] = specs
+        missing = [s for s in find_missing_output_specs(trace) if s not in specs]
+        failed_specs_by_job_id[job_id] = specs + missing
+        for basename, full_path in parse_spec_full_paths(trace).items():
+            known_spec_paths.setdefault(basename, full_path)
         group_label = f"#{group_first_id[name]}: {name}"
         retry_label = f"#{job_id}: {name}"
-        if not specs:
+        if not specs and not missing:
             no_spec_jobs.append((job_id, name))
             rows.append({
                 "Job": group_label,
                 "Related jobs": retry_label,
                 "Failed spec": "",
+                "Note": "",
             })
             continue
         for spec in specs:
@@ -267,10 +300,21 @@ def main():
                 "Job": group_label,
                 "Related jobs": retry_label,
                 "Failed spec": spec,
+                "Note": "",
+            })
+        if missing:
+            missing_output_jobs.append((job_id, name, missing))
+            missing_output_specs.update(missing)
+        for spec in missing:
+            rows.append({
+                "Job": group_label,
+                "Related jobs": retry_label,
+                "Failed spec": spec,
+                "Note": MISSING_OUTPUT_NOTE,
             })
 
     with open(args.output, "w", newline="") as fh:
-        writer = csv.DictWriter(fh, fieldnames=["Job", "Related jobs", "Failed spec"])
+        writer = csv.DictWriter(fh, fieldnames=["Job", "Related jobs", "Failed spec", "Note"])
         writer.writeheader()
         writer.writerows(rows)
 
@@ -282,6 +326,13 @@ def main():
         )
         for jid, name in no_spec_jobs:
             sys.stderr.write(f"  #{jid} {name}\n")
+    if missing_output_jobs:
+        sys.stderr.write(
+            f"{len(missing_output_jobs)} job(s) started a spec that never reached "
+            "the Cypress summary table (crash/timeout/OOM) — outcome unknown:\n"
+        )
+        for jid, name, missing in missing_output_jobs:
+            sys.stderr.write(f"  #{jid} {name}: {', '.join(missing)}\n")
 
     # Build a de-duplicated list of failed spec filenames, preserving discovery order
     unique_specs = []
@@ -353,18 +404,21 @@ def main():
         else:
             first_failed_job_url[spec] = ""
 
-    resolved, unresolved = resolve_spec_paths(unique_specs)
+    resolved, unresolved = resolve_spec_paths(unique_specs, known_paths=known_spec_paths)
 
     unique_rows = [
         {
             "Failed spec": spec,
             "Passed on retry": passed_on_retry[spec],
             "first_failed_job_url": first_failed_job_url[spec],
+            "Note": MISSING_OUTPUT_NOTE if spec in missing_output_specs else "",
         }
         for spec in unique_specs
     ]
     with open(args.unique_output, "w", newline="") as fh:
-        writer = csv.DictWriter(fh, fieldnames=["Failed spec", "Passed on retry", "first_failed_job_url"])
+        writer = csv.DictWriter(
+            fh, fieldnames=["Failed spec", "Passed on retry", "first_failed_job_url", "Note"]
+        )
         writer.writeheader()
         writer.writerows(unique_rows)
     sys.stderr.write(f"Wrote {len(unique_rows)} unique spec(s) to {args.unique_output}\n")

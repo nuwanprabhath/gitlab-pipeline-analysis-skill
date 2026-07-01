@@ -44,6 +44,19 @@ Claude will discover the skill via its `description` and run the workflow in
 [`SKILL.md`](SKILL.md). You can also clone anywhere and point Claude at the
 folder.
 
+### Updating
+
+The install directory is a plain git checkout, so pulling picks up fixes:
+
+```bash
+cd ~/.claude/skills/gitlab-pipeline-analysis && git pull
+```
+
+If you installed via a Claude Code prompt, use one that checks for an
+existing checkout and pulls instead of re-cloning — see
+[`INSTALL_PROMPT.md`](INSTALL_PROMPT.md) for a copy-pasteable version that
+works for both first install and updates.
+
 ## Usage (standalone scripts)
 
 From any directory (CSVs are written to the current directory):
