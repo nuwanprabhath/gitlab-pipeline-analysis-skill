@@ -1,36 +1,93 @@
 # Failure-cause taxonomy
 
-A reference for labelling each failed spec's `failure_cause`. Match the captured
-error (`failures_raw.json` → `first_error` / `signatures`) to a bucket, then write
-a concise label. Prefer a **root cause** over a downstream symptom, and hedge
-(`(likely ...)`) when the evidence is partial.
+A reference for labelling each failed spec's `failure_cause` and
+`bug_likelihood_(AI)`. Match the captured error (`failures_raw_<pid>.json` →
+`first_error` / `signatures`) to a bucket, then write a concise label. Prefer
+a **root cause** over a downstream symptom, and hedge (`(likely ...)`) when
+the evidence is partial.
 
 This list is meant to grow — add recurring signatures your team sees.
 
 ## Golden rules
 
-1. **Root vs cascade.** One stuck interaction early in a form makes everything
+1. **The raw error message is a starting point, not a verdict.** Before
+   labelling, understand what the failing test was *trying to assert*: read
+   the spec code at `first_error_spec_line` (and the custom command it calls,
+   under `test/cypress/support/`). A bare `expected false to be true` is
+   meaningless until you know it came from, e.g., a route assertion that the
+   app "shouldn't have navigated". The repo is public — see "Reading the code
+   at the pipeline's commit" in SKILL.md.
+2. **Root vs cascade.** One stuck interaction early in a form makes everything
    after it fail (`element never found`, `stepper step-content continuously
    found`, `cy.filter() requires a DOM element`). Label those `cascade of ...`,
    not as their own bug.
-2. **Flaky vs hard.** `Passed on retry: yes` in the CSV → `flaky (passed on retry)`.
-3. **Related vs pre-existing.** Keep environment/ordering/test-bug failures out of
+3. **Flaky vs hard.** `Passed on retry: yes` in the CSV → `flaky (passed on retry)`.
+4. **Related vs pre-existing.** Keep environment/ordering/test-bug failures out of
    the headline cluster.
-4. **Be honest about confidence.** `(likely upstream cascade)` is a valid label.
+5. **Stale test vs app bug.** When a *deterministic* assertion fails (exact
+   text/route/data mismatch, not a timeout), check whether the app behavior
+   was intentionally changed: `git log --oneline -S "<asserted text>" --
+   <app src>` at the checkout, or search recent MRs. A test asserting removed
+   behavior is `stale test (app behavior changed: <feature>)`, not an app bug.
+   Real example: plot-context.cy.js asserted "Cannot edit protocol ... due to
+   differing context" rejection; the quick-swap feature had deliberately
+   replaced rejection with auto-switching context, so the app now navigates
+   into the workflow and the route assertion fails.
+6. **Be honest about confidence.** `(likely upstream cascade)` is a valid label.
 
-## Buckets and signatures
+## bug_likelihood_(AI) rubric
 
-### Dropdown / select (paratoo-fdcp specific)
+This column separates **real app bugs** from **Cypress/test-infra glitches**
+so users can locally re-run the HIGH ones first. Assign one of:
+
+- **HIGH** — evidence points at the app, not the test runner:
+  - Deterministic value mismatches: exact-text assertion fails
+    (`expected 'X' to equal 'X (suffix)'`), wrong list contents
+    (`expected [Array(26)] to deeply equal ['Forb','Shrub']`), wrong data
+    shape (`Unregistered model case <model>`).
+  - The app displays a real error state (`Failed to load protocol`, setup
+    error banner, uncaught app exception in the notification).
+  - The same deterministic mismatch appears in 2+ independent specs.
+- **MEDIUM** — deterministic but ambiguous:
+  - Count mismatches (`expected 144 to equal 96`) that could be data
+    pollution from earlier retries/specs rather than an app defect.
+  - A behavior assertion fails and git history shows the app intentionally
+    changed (stale test) — the *test* needs fixing, and product should
+    confirm the new behavior is intended.
+  - An expected UI state never appears (`tokenExpiredBanner` never shown)
+    where timing alone probably can't explain it.
+- **LOW** — matches a known Cypress-glitch/false-positive family (below), is
+  a cascade of one, is an ordering dependency, is a test bug, or passed on
+  retry.
+
+When in doubt between two levels, pick the higher one and hedge in the
+`failure_cause` text.
+
+## Known Cypress-glitch (false-positive) families → LOW
+
+These recur in this project regardless of app correctness. They are
+interaction/timing races in the test driver, not app bugs:
+
 | Signature (substring) | Suggested label |
 |---|---|
 | `Quasar QSelect menu did not filter results within` | `filter-wait no-change (#2745)` |
 | `Expected to find option but found no matches` | `dropdown filter race: found no matches (#2744)` |
+| `.q-menu[role=listbox]:visible` never found | `dropdown/listbox never opened` |
+| `.q-item[role=option]` never found | `dropdown options never rendered` |
+| `cy.click() failed because the center of this element is hidden from view` | `element covered by popup/overlay on click` |
+| `Could not find a chevron icon` | `dropdown chevron not found (dropdown internal race)` |
 | `clearStaleMenuPortals] N portal(s) still active` | `dropdown portal not closing: clearStaleMenuPortals (<field>)` |
 | `.multiselect__tags > span` never found | `Vue Multiselect <field> never populated` |
 | `i.q-icon.rotate-180` never found (qSelectClose) | `dropdown close race (qSelectClose/tryUntil)` |
 | `cy.click() ... no longer attached / page updated` on a `q-item` | `dropdown option detached mid-click` |
 
-### Cascades (downstream of a stuck step)
+**Escalate to MEDIUM** only if the same field in the same test fails across
+multiple retries AND pipelines (a permanently-empty dropdown can be a real
+data/API bug — check whether the options are supposed to come from an API
+response).
+
+## Cascades (downstream of a stuck step) → LOW
+
 | Signature | Suggested label |
 |---|---|
 | `q-stepper__step-content ... continuously found` | `cascade of dropdown/form failure (stepper)` |
@@ -38,33 +95,49 @@ This list is meant to grow — add recurring signatures your team sees.
 | `[data-cy=...] but never found it` after an earlier failure | `cascade of dropdown/form failure` |
 | `[data-cy="Kitchen Sink TEST Project"]` never found | `cascade: project/Kitchen Sink not found` |
 
-### Pre-existing / environment (usually unrelated to the cluster)
+Careful: only label a cascade when there IS an upstream failure in the same
+spec (check `signatures` order and the trace). A "Kitchen Sink project not
+found" as the *first* failure of a spec is not a cascade — dig into it.
+
+## Pre-existing / environment (usually unrelated) → LOW
+
 | Signature | Suggested label |
 |---|---|
 | `Failed to publish` / `Failed to upload to core` / `Org is unavailable` / `Failed while doing fetch()` / `No response from server` / `Bad request` | `publish/upload flake (pre-existing)` |
 | `Collection has already been submitted` / `is not unique` | `publish flake: duplicate/already-submitted (pre-existing)` |
 | sync test long timeout (`720000ms`, `should skip the submitted collection`) | `sync flow timeout (pre-existing)` |
 
-### Ordering dependencies (one spec needs another to run first)
+## Ordering dependencies → LOW
+
 | Signature | Suggested label |
 |---|---|
 | `Missing previous surveys. Please run the survey spec first` | `ordering dependency cascade (needs prior survey)` |
 | `No past record for <X> to test against` | `ordering dependency cascade (needs prior spec)` |
 
-### Test / selector bugs (fix the test, not the app)
+## Test / selector bugs (fix the test, not the app) → LOW
+
 | Signature | Suggested label |
 |---|---|
 | `cy.scrollIntoView() can only be used to scroll to 1 element, you tried to scroll to N` | `test bug: scrollIntoView matched multiple elements` |
+| `cy.submit() can only be called on a single form. Your subject contained N form elements` | `test bug: cy.submit matched multiple forms` |
 | `subject.as is not a function` | `test bug: subject.as is not a function` |
 
-### App / data
-| Signature | Suggested label |
-|---|---|
-| `Cannot read properties of undefined (reading '<x>')` | `app/data: undefined <x>` |
-| count assertion mismatch e.g. `expected 110 to equal 94` | `data-count mismatch (likely upstream cascade)` |
-| `tokenExpiredBanner` never found | `auth: tokenExpiredBanner (independent)` |
+## App / data signals (candidates for MEDIUM/HIGH — verify against code)
 
-### Fallbacks
+| Signature | Suggested label | Likelihood |
+|---|---|---|
+| exact-text mismatch: `expected '<text>' to equal '<text> (<suffix>)'` | `app label regression: missing <suffix>` | HIGH |
+| `expected [ Array(N) ] to deeply equal [...]` (list contents wrong) | `app/data: wrong <field> contents` | HIGH |
+| `Unregistered model case <model>` | `app data-shape change: new model <model> (test helper needs case, or app leak)` | HIGH |
+| `Expected not to find content: '<app error text>' but continuously found it` | `app error state: <text> shown` | HIGH |
+| `Cannot read properties of undefined (reading '<x>')` | `app/data: undefined <x>` | MEDIUM-HIGH |
+| count assertion mismatch e.g. `expected 110 to equal 94` | `data-count mismatch (likely upstream cascade)` | MEDIUM |
+| `tokenExpiredBanner` never found | `auth: tokenExpiredBanner (independent)` | MEDIUM |
+| route assertion fails (`expected false to be true` from testRoute / navigation observed in command log) | read the test + app code; either `app bug: <guard> not enforced` (HIGH) or `stale test (app behavior changed: <feature>)` (MEDIUM) | MEDIUM-HIGH |
+
+## Fallbacks
+
 - A dropdown selection that times out on `cy.click()` where the element isn't
-  clearly an option → `dropdown interaction timeout (likely <relevant ticket>)`.
-- Anything you can't pin → `OTHER: <short error>` and flag it to the user.
+  clearly an option → `dropdown interaction timeout (likely <relevant ticket>)`, LOW.
+- Anything you can't pin → `OTHER: <short error>`, MEDIUM (unknowns are worth
+  a human look), and flag it to the user.

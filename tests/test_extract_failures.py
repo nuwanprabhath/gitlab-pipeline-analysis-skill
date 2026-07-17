@@ -85,6 +85,41 @@ class ParseSpecFailuresTests(unittest.TestCase):
         self.assertIn("foo failed", result["foo.cy.js"]["first_error"])
         self.assertIn("bar failed", result["bar.cy.js"]["first_error"])
 
+    def test_captures_spec_line_from_stack_frame(self):
+        log = build_log(
+            gitlab_line("  Running:  plot-context.cy.js"),
+            gitlab_line("  1) Check cannot edit"),
+            gitlab_line("     AssertionError: Timed out retrying after 30000ms: expected false to be true"),
+            gitlab_line("      at Context.eval (webpack://monitor-webapp/./node_modules/@quasar/quasar-app-extension-testing-e2e-cypress/dist/esm/commands/test-route.js:9:13)"),
+            gitlab_line("      at Context.eval (webpack://monitor-webapp/./test/cypress/integration/priority/plot-context.cy.js:383:9)"),
+        )
+        result = ef.parse_spec_failures(log, job_id=1, job_name="job")
+        rec = result["plot-context.cy.js"]
+        # The quasar-extension frame is skipped; the spec's own frame wins
+        self.assertEqual(rec["first_error_spec_line"], 383)
+
+    def test_spec_line_none_when_no_spec_frame(self):
+        log = build_log(
+            gitlab_line("  Running:  foo.cy.js"),
+            gitlab_line("  1) a test"),
+            gitlab_line("     AssertionError: nope"),
+        )
+        result = ef.parse_spec_failures(log, job_id=1, job_name="job")
+        self.assertIsNone(result["foo.cy.js"]["first_error_spec_line"])
+
+    def test_captures_spec_path_from_spec_start_marker(self):
+        log = build_log(
+            gitlab_line("[SPEC START] test/cypress/integration/priority/foo.cy.js | ts | local"),
+            gitlab_line("  Running:  foo.cy.js"),
+            gitlab_line("  1) a test"),
+            gitlab_line("     AssertionError: nope"),
+        )
+        result = ef.parse_spec_failures(log, job_id=1, job_name="job")
+        self.assertEqual(
+            result["foo.cy.js"]["spec_path"],
+            "test/cypress/integration/priority/foo.cy.js",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

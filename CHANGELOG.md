@@ -5,6 +5,42 @@ All notable changes to this skill are documented here. Format follows
 [Semantic Versioning](https://semver.org/) and is tracked in the `version`
 field of [`SKILL.md`](SKILL.md)'s frontmatter.
 
+## [1.2.0] - 2026-07-17
+
+### Added
+- **`bug_likelihood_(AI)` column** (LOW/MEDIUM/HIGH) on
+  `failed_specs_unique_<pipeline>.csv`, separating likely real app bugs from
+  Cypress-glitch false positives so users can re-run the HIGH ones locally
+  first. `annotate_failure_cause.py` accepts mapping values as either a plain
+  string (cause only, back-compatible) or
+  `{"failure_cause": ..., "bug_likelihood": ...}`.
+- `extract_failures.py` output now carries the pipeline's commit **`sha`**
+  (plus project/web_url) in a top-level header, and per spec: `spec_path`
+  (repo path from `[SPEC START]` markers), `first_error_frames` (stack frames
+  pointing into repo test code, e.g. `test/cypress/support/commands.js:1382`),
+  and `first_error_spec_line`. Output shape changed from a bare list to
+  `{pipeline_id, project, sha, web_url, specs: [...]}`.
+- SKILL.md: new "Reading the code at the pipeline's commit" section — the
+  project is open source on GitLab, so classification now reads the spec /
+  custom-command code at the pipeline's SHA (local checkout via
+  `git show <sha>:<path>`, or `glab api repository/files/<path>/raw?ref=<sha>`).
+
+### Changed
+- Classification workflow (SKILL.md step 4) now requires deriving the
+  **test's intent** from code before labelling — a bare error like
+  `expected false to be true` must be traced to what the assertion checks
+  (e.g. a route assertion that the app "shouldn't have navigated").
+  Deterministic behavior mismatches must be checked against app git history
+  (`git log -S`) to distinguish real regressions from **stale tests** whose
+  asserted behavior was intentionally changed.
+- `reference/failure_taxonomy.md` reorganized around the glitch-vs-bug
+  question: a "Known Cypress-glitch families" section (dropdown races,
+  covered-by-popup clicks, listbox/options never rendering → LOW), an
+  expanded app/data-signal table (exact-text label regressions, wrong list
+  contents, data-shape changes, app error states → HIGH), a stale-test rule
+  with a worked example (plot-context vs the quick-swap feature), and the
+  full `bug_likelihood_(AI)` rubric.
+
 ## [1.1.1] - 2026-07-01
 
 ### Added

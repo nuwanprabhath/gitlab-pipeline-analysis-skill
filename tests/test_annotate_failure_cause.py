@@ -89,11 +89,55 @@ class AnnotateFailureCauseTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         rows = read_csv(self.csv_path)
         self.assertEqual(rows[0]["failure_cause"], "updated label")
-        # Column shouldn't be duplicated on re-run
+        # Columns shouldn't be duplicated on re-run
         self.assertEqual(
             list(rows[0].keys()),
-            ["Failed spec", "Passed on retry", "first_failed_job_url", "Note", "failure_cause"],
+            [
+                "Failed spec", "Passed on retry", "first_failed_job_url", "Note",
+                "failure_cause", "bug_likelihood_(AI)",
+            ],
         )
+
+    def test_object_mapping_fills_bug_likelihood(self):
+        self.write_mapping({
+            "a.cy.js": {"failure_cause": "app label regression", "bug_likelihood": "HIGH"},
+            "b.cy.js": {"failure_cause": "dropdown filter race (#2744)", "bug_likelihood": "low"},
+        })
+        result = run_annotate("--mapping", str(self.mapping_path), "--csv", str(self.csv_path))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        rows = read_csv(self.csv_path)
+        self.assertEqual(rows[0]["failure_cause"], "app label regression")
+        self.assertEqual(rows[0]["bug_likelihood_(AI)"], "HIGH")
+        # lowercase input is normalized to uppercase
+        self.assertEqual(rows[1]["bug_likelihood_(AI)"], "LOW")
+
+    def test_string_mapping_leaves_bug_likelihood_blank(self):
+        self.write_mapping({"a.cy.js": "some cause", "b.cy.js": "another"})
+        result = run_annotate("--mapping", str(self.mapping_path), "--csv", str(self.csv_path))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        rows = read_csv(self.csv_path)
+        self.assertEqual(rows[0]["bug_likelihood_(AI)"], "")
+        self.assertIn("Missing bug_likelihood", result.stderr)
+
+    def test_invalid_bug_likelihood_rejected(self):
+        self.write_mapping({
+            "a.cy.js": {"failure_cause": "x", "bug_likelihood": "MAYBE"},
+        })
+        result = run_annotate("--mapping", str(self.mapping_path), "--csv", str(self.csv_path))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Invalid bug_likelihood", result.stderr)
+
+    def test_mixed_string_and_object_mapping(self):
+        self.write_mapping({
+            "a.cy.js": {"failure_cause": "real bug", "bug_likelihood": "HIGH"},
+            "b.cy.js": "flaky (passed on retry)",
+        })
+        result = run_annotate("--mapping", str(self.mapping_path), "--csv", str(self.csv_path))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        rows = read_csv(self.csv_path)
+        self.assertEqual(rows[0]["bug_likelihood_(AI)"], "HIGH")
+        self.assertEqual(rows[1]["failure_cause"], "flaky (passed on retry)")
+        self.assertEqual(rows[1]["bug_likelihood_(AI)"], "")
 
     def test_custom_output_path_leaves_source_untouched(self):
         self.write_mapping({"a.cy.js": "x", "b.cy.js": "y"})
