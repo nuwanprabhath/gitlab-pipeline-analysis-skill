@@ -14,6 +14,11 @@ field of [`SKILL.md`](SKILL.md)'s frontmatter.
   first. `annotate_failure_cause.py` accepts mapping values as either a plain
   string (cause only, back-compatible) or
   `{"failure_cause": ..., "bug_likelihood": ...}`.
+- The unique CSV now has a fixed six-column layout, in order:
+  `Failed spec, Passed on retry, bug_likelihood_(AI), Note, failure_cause,
+  first_failed_job_url`. `pipeline_failed_specs.py` emits all six (with empty
+  placeholders for the two annotate-filled columns) so the column order is
+  stable whether or not annotation has run.
 - `extract_failures.py` output now carries the pipeline's commit **`sha`**
   (plus project/web_url) in a top-level header, and per spec: `spec_path`
   (repo path from `[SPEC START]` markers), `first_error_frames` (stack frames

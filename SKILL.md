@@ -157,9 +157,11 @@ usually there (e.g. `selectProtocol` with `willRejectEntering: true` asserts
 ## Output recap
 
 - `failed_specs_$PID.csv` — per-job/retry rows.
-- `failed_specs_unique_$PID.csv` — deduped, now with `failure_cause` and
-  `bug_likelihood_(AI)` (HIGH = likely real app bug, re-run locally first;
-  LOW = likely Cypress glitch/cascade/flake).
+- `failed_specs_unique_$PID.csv` — deduped, fixed column order:
+  `Failed spec, Passed on retry, bug_likelihood_(AI), Note, failure_cause,
+  first_failed_job_url`. `bug_likelihood_(AI)` and `failure_cause` are empty
+  until step 5 annotates them (HIGH = likely real app bug, re-run locally
+  first; LOW = likely Cypress glitch/cascade/flake).
 - `failures_raw_$PID.json`, `mapping_$PID.json` — intermediate working files
   (safe to delete). All filenames are suffixed with the pipeline id so
   re-running for a different pipeline in the same folder doesn't clobber a

@@ -417,18 +417,28 @@ def main():
 
     resolved, unresolved = resolve_spec_paths(unique_specs, known_paths=known_spec_paths)
 
+    # `bug_likelihood_(AI)` and `failure_cause` are written as empty placeholders
+    # here and filled in later by annotate_failure_cause.py (which fills columns
+    # in place). Emitting them up-front fixes the final column order regardless
+    # of when annotation runs.
     unique_rows = [
         {
             "Failed spec": spec,
             "Passed on retry": passed_on_retry[spec],
-            "first_failed_job_url": first_failed_job_url[spec],
+            "bug_likelihood_(AI)": "",
             "Note": MISSING_OUTPUT_NOTE if spec in missing_output_specs else "",
+            "failure_cause": "",
+            "first_failed_job_url": first_failed_job_url[spec],
         }
         for spec in unique_specs
     ]
     with open(args.unique_output, "w", newline="") as fh:
         writer = csv.DictWriter(
-            fh, fieldnames=["Failed spec", "Passed on retry", "first_failed_job_url", "Note"]
+            fh,
+            fieldnames=[
+                "Failed spec", "Passed on retry", "bug_likelihood_(AI)", "Note",
+                "failure_cause", "first_failed_job_url",
+            ],
         )
         writer.writeheader()
         writer.writerows(unique_rows)

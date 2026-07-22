@@ -86,6 +86,21 @@ class MainIntegrationTests(unittest.TestCase):
         self.assertTrue((tmp / "failed_specs_999888777.csv").exists())
         self.assertTrue((tmp / "failed_specs_unique_999888777.csv").exists())
 
+    def test_unique_csv_column_order(self):
+        """The unique CSV ships all six columns in a fixed order, with empty
+        placeholders for the two annotate-filled columns."""
+        tmp = self.run_main_in_tmpdir(["999888777"])
+        with open(tmp / "failed_specs_unique_999888777.csv", newline="") as fh:
+            reader = csv.reader(fh)
+            header = next(reader)
+        self.assertEqual(
+            header,
+            [
+                "Failed spec", "Passed on retry", "bug_likelihood_(AI)", "Note",
+                "failure_cause", "first_failed_job_url",
+            ],
+        )
+
     def test_retry_detection_and_missing_output_note(self):
         tmp = self.run_main_in_tmpdir(["999888777"])
         with open(tmp / "failed_specs_unique_999888777.csv", newline="") as fh:

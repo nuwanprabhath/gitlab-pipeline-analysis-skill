@@ -1,19 +1,20 @@
-Failed spec,Passed on retry,first_failed_job_url,failure_cause
-cover-point-intercept-full-pro.cy.js,no,https://gitlab.com/ternandsparrow/paratoo-fdcp/-/jobs/15070861543,dropdown portal not closing: clearStaleMenuPortals (life_stage) + Vue Multiselect selectingTransect
-sign-based-track-station.cy.js,no,https://gitlab.com/ternandsparrow/paratoo-fdcp/-/jobs/15070861545,dropdown portal not closing: clearStaleMenuPortals (station_setup_ID)
-sign-based-vehicle-track.cy.js,no,https://gitlab.com/ternandsparrow/paratoo-fdcp/-/jobs/15070861546,dropdown portal not closing: clearStaleMenuPortals (transect_setup_ID)
-cover+floristics.cy.js,no,https://gitlab.com/ternandsparrow/paratoo-fdcp/-/jobs/15070861549,Vue Multiselect selectingTransect never populated / sync
-recruitment-survivorship.cy.js,no,https://gitlab.com/ternandsparrow/paratoo-fdcp/-/jobs/15070861547,dropdown filter race: found no matches (#2744 residual)
-data-manager-historical-resolve.cy.js,no,https://gitlab.com/ternandsparrow/paratoo-fdcp/-/jobs/15070861548,test bug: scrollIntoView matched multiple elements
-invertebrate-malaise.cy.js,no,https://gitlab.com/ternandsparrow/paratoo-fdcp/-/jobs/15070861546,test bug: scrollIntoView matched multiple elements
-plot-selection-pro.cy.js,no,https://gitlab.com/ternandsparrow/paratoo-fdcp/-/jobs/15070861537,publish/upload flake (pre-existing)
-data-dump.cy.js,no,https://gitlab.com/ternandsparrow/paratoo-fdcp/-/jobs/15070861544,offline data-dump/publish flow (pre-existing)
-sync-retry.cy.js,no,https://gitlab.com/ternandsparrow/paratoo-fdcp/-/jobs/15070861543,sync flow timeout (pre-existing)
-doc-refresh.cy.js,no,https://gitlab.com/ternandsparrow/paratoo-fdcp/-/jobs/15070861545,auth tokenExpiredBanner (independent)
-grassy-weeds-aerial-conduct-survey.cy.js,no,https://gitlab.com/ternandsparrow/paratoo-fdcp/-/jobs/15070861544,ordering dependency cascade (needs prior survey)
-vertebrate-trap-2.cy.js,no,https://gitlab.com/ternandsparrow/paratoo-fdcp/-/jobs/15070861547,cascade: validate-field cy.filter notification
-_summary-widgets.cy.js,no,https://gitlab.com/ternandsparrow/paratoo-fdcp/-/jobs/15070861544,data-count mismatch (likely upstream cascade)
-plot-context.cy.js,no,https://gitlab.com/ternandsparrow/paratoo-fdcp/-/jobs/15070861536,assertion failure (likely upstream cascade)
-a-plot-selection.cy.js,no,https://gitlab.com/ternandsparrow/paratoo-fdcp/-/jobs/15070861536,plot-selection flow cy.click timeout (project/program step)
-opportune.cy.js,yes (2) (#15071975758),https://gitlab.com/ternandsparrow/paratoo-fdcp/-/jobs/15070861544,flaky (passed on retry)
-invertebrate-rapid-ground.cy.js,yes (2) (#15071847468),https://gitlab.com/ternandsparrow/paratoo-fdcp/-/jobs/15070861543,flaky (passed on retry)
+Failed spec,Passed on retry,bug_likelihood_(AI),Note,failure_cause,first_failed_job_url
+cover-point-intercept-full-pro.cy.js,no,LOW,,dropdown portal not closing: clearStaleMenuPortals (life_stage) + Vue Multiselect selectingTransect,https://gitlab.com/ternandsparrow/paratoo-fdcp/-/jobs/15070861543
+sign-based-track-station.cy.js,no,LOW,,dropdown portal not closing: clearStaleMenuPortals (station_setup_ID),https://gitlab.com/ternandsparrow/paratoo-fdcp/-/jobs/15070861545
+sign-based-vehicle-track.cy.js,no,LOW,,dropdown portal not closing: clearStaleMenuPortals (transect_setup_ID),https://gitlab.com/ternandsparrow/paratoo-fdcp/-/jobs/15070861546
+cover+floristics.cy.js,no,LOW,,Vue Multiselect selectingTransect never populated / sync,https://gitlab.com/ternandsparrow/paratoo-fdcp/-/jobs/15070861549
+recruitment-survivorship.cy.js,no,LOW,,dropdown filter race: found no matches (#2744 residual),https://gitlab.com/ternandsparrow/paratoo-fdcp/-/jobs/15070861547
+data-manager-historical-resolve.cy.js,no,LOW,,test bug: scrollIntoView matched multiple elements,https://gitlab.com/ternandsparrow/paratoo-fdcp/-/jobs/15070861548
+invertebrate-malaise.cy.js,no,LOW,,test bug: scrollIntoView matched multiple elements,https://gitlab.com/ternandsparrow/paratoo-fdcp/-/jobs/15070861546
+plot-selection-pro.cy.js,no,LOW,,publish/upload flake (pre-existing),https://gitlab.com/ternandsparrow/paratoo-fdcp/-/jobs/15070861537
+data-dump.cy.js,no,LOW,,offline data-dump/publish flow (pre-existing),https://gitlab.com/ternandsparrow/paratoo-fdcp/-/jobs/15070861544
+sync-retry.cy.js,no,LOW,,sync flow timeout (pre-existing),https://gitlab.com/ternandsparrow/paratoo-fdcp/-/jobs/15070861543
+doc-refresh.cy.js,no,MEDIUM,,auth tokenExpiredBanner never shown (independent),https://gitlab.com/ternandsparrow/paratoo-fdcp/-/jobs/15070861545
+grassy-weeds-aerial-conduct-survey.cy.js,no,LOW,,ordering dependency cascade (needs prior survey),https://gitlab.com/ternandsparrow/paratoo-fdcp/-/jobs/15070861544
+vertebrate-trap-2.cy.js,no,LOW,,cascade: validate-field cy.filter notification,https://gitlab.com/ternandsparrow/paratoo-fdcp/-/jobs/15070861547
+_summary-widgets.cy.js,no,MEDIUM,,data-count mismatch (likely upstream cascade),https://gitlab.com/ternandsparrow/paratoo-fdcp/-/jobs/15070861544
+floristics-full-pro.cy.js,no,HIGH,,app/data: growth-form field shows full list instead of species-filtered subset,https://gitlab.com/ternandsparrow/paratoo-fdcp/-/jobs/15070861542
+basal-area-wedge-pro.cy.js,no,MEDIUM,Unable to find outputs,job crashed mid-spec (OOM/timeout) - outcome unknown,https://gitlab.com/ternandsparrow/paratoo-fdcp/-/jobs/15070861540
+a-plot-selection.cy.js,no,LOW,,plot-selection flow cy.click timeout (project/program step),https://gitlab.com/ternandsparrow/paratoo-fdcp/-/jobs/15070861536
+opportune.cy.js,yes (2) (#15071975758),LOW,,flaky (passed on retry),https://gitlab.com/ternandsparrow/paratoo-fdcp/-/jobs/15070861544
+invertebrate-rapid-ground.cy.js,yes (2) (#15071847468),LOW,,flaky (passed on retry),https://gitlab.com/ternandsparrow/paratoo-fdcp/-/jobs/15070861543

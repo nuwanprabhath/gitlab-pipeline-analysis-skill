@@ -151,6 +151,32 @@ class AnnotateFailureCauseTests(unittest.TestCase):
         original_rows = read_csv(self.csv_path)
         self.assertNotIn("failure_cause", original_rows[0])
 
+    def test_preserves_canonical_column_order_when_columns_preexist(self):
+        """When the base CSV already ships the annotate columns as empty
+        placeholders (as pipeline_failed_specs.py now emits), annotation fills
+        them in place and preserves the column order exactly."""
+        canonical = [
+            "Failed spec", "Passed on retry", "bug_likelihood_(AI)", "Note",
+            "failure_cause", "first_failed_job_url",
+        ]
+        with open(self.csv_path, "w", newline="") as fh:
+            writer = csv.writer(fh)
+            writer.writerow(canonical)
+            writer.writerow(["a.cy.js", "no", "", "", "", "https://gitlab.com/x/-/jobs/1"])
+            writer.writerow(["b.cy.js", "no", "", "Unable to find outputs", "", "https://gitlab.com/x/-/jobs/2"])
+        self.write_mapping({
+            "a.cy.js": {"failure_cause": "real bug", "bug_likelihood": "HIGH"},
+            "b.cy.js": {"failure_cause": "glitch", "bug_likelihood": "LOW"},
+        })
+        result = run_annotate("--mapping", str(self.mapping_path), "--csv", str(self.csv_path))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        rows = read_csv(self.csv_path)
+        self.assertEqual(list(rows[0].keys()), canonical)
+        self.assertEqual(rows[0]["bug_likelihood_(AI)"], "HIGH")
+        self.assertEqual(rows[0]["failure_cause"], "real bug")
+        # Placeholder Note preserved, columns not duplicated
+        self.assertEqual(rows[1]["Note"], "Unable to find outputs")
+
 
 if __name__ == "__main__":
     unittest.main()
