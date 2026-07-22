@@ -5,6 +5,30 @@ All notable changes to this skill are documented here. Format follows
 [Semantic Versioning](https://semver.org/) and is tracked in the `version`
 field of [`SKILL.md`](SKILL.md)'s frontmatter.
 
+## [1.3.0] - 2026-07-22
+
+### Added
+- **`New failure` column** (3rd column) on `failed_specs_unique_<pipeline>.csv`,
+  flagging specs that failed in this run but not the previous one:
+  `yes` (newly introduced), `no` (pre-existing), `N/A` (no prior run / not
+  compared). A new-failure that is also `bug_likelihood_(AI): HIGH` is the
+  top-priority spec to re-run locally.
+- **`compare_new_failures.py`** — deterministic comparison against the previous
+  run's unique CSV. Auto-detects the most recently created
+  `failed_specs_unique_*.csv` in the folder (`--detect-only` prints it so the
+  skill can prompt "compare with X?"), or takes an explicit `--previous`. Only
+  the `Failed spec` column is required in either CSV, so it survives column
+  changes. First-time runs (no prior file) leave every row `N/A`.
+- SKILL.md step 3: detect the prior unique CSV, ask the user via
+  AskUserQuestion whether to compare, and populate `New failure` — asked only
+  when a valid prior file exists.
+
+### Changed
+- Unique CSV column order is now (7 cols):
+  `Failed spec, Passed on retry, New failure, bug_likelihood_(AI), Note,
+  failure_cause, first_failed_job_url`. `pipeline_failed_specs.py` emits
+  `New failure` defaulting to `N/A`.
+
 ## [1.2.0] - 2026-07-17
 
 ### Added

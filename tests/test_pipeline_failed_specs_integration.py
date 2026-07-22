@@ -96,8 +96,8 @@ class MainIntegrationTests(unittest.TestCase):
         self.assertEqual(
             header,
             [
-                "Failed spec", "Passed on retry", "bug_likelihood_(AI)", "Note",
-                "failure_cause", "first_failed_job_url",
+                "Failed spec", "Passed on retry", "New failure", "bug_likelihood_(AI)",
+                "Note", "failure_cause", "first_failed_job_url",
             ],
         )
 
@@ -117,6 +117,10 @@ class MainIntegrationTests(unittest.TestCase):
 
         # b.cy.js crashed mid-spec on attempt #100 - unknown outcome, flagged
         self.assertEqual(rows["b.cy.js"]["Note"], pfs.MISSING_OUTPUT_NOTE)
+
+        # New failure defaults to N/A until a comparison step runs
+        self.assertEqual(rows["a.cy.js"]["New failure"], "N/A")
+        self.assertEqual(rows["b.cy.js"]["New failure"], "N/A")
 
     def test_custom_output_paths_override_defaults(self):
         tmp = self.run_main_in_tmpdir(

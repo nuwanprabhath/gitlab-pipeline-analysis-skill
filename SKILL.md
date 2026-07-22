@@ -3,12 +3,12 @@ name: gitlab-pipeline-analysis
 description: >-
   Triage failed Cypress specs in a GitLab CI pipeline. Given a pipeline number or
   URL, generate failed_specs_<pipeline>.csv and failed_specs_unique_<pipeline>.csv
-  (the latter with failure_cause and bug_likelihood_(AI) columns that separate
-  real app bugs from Cypress glitches), group the failures by root cause, and
-  offer to open a GitLab issue for the dominant cluster. Use when asked to
-  investigate, analyze, triage, or summarize CI / pipeline test failures, or to
-  classify why specs failed.
-version: 1.2.0
+  (the latter with New failure, failure_cause and bug_likelihood_(AI) columns that
+  flag regressions vs the previous run and separate real app bugs from Cypress
+  glitches), group the failures by root cause, and offer to open a GitLab issue
+  for the dominant cluster. Use when asked to investigate, analyze, triage, or
+  summarize CI / pipeline test failures, or to classify why specs failed.
+version: 1.3.0
 ---
 
 # GitLab Pipeline Failure Analysis
@@ -47,15 +47,40 @@ overwrites a previous run. Let `PID` be that pipeline id.
    Defaults to writing `failed_specs_$PID.csv` and
    `failed_specs_unique_$PID.csv` (override with `-o`/`-u` if needed).
    `failed_specs_$PID.csv` has one row per failed spec per job/retry;
-   `failed_specs_unique_$PID.csv` is deduped (`Failed spec, Passed on retry,
-   first_failed_job_url, Note`). Specs marked `Passed on retry: yes (...)` are
+   `failed_specs_unique_$PID.csv` is deduped with a fixed column order:
+   `Failed spec, Passed on retry, New failure, bug_likelihood_(AI), Note,
+   failure_cause, first_failed_job_url` (the last four start blank/`N/A` and
+   are filled by later steps). Specs marked `Passed on retry: yes (...)` are
    FLAKY, not hard failures. Specs marked `Note: Unable to find outputs`
    started (per a `[SPEC START]` marker) but the job never logged a matching
    `[SPEC END]` — it likely crashed, timed out, or was OOM-killed mid-spec, so
    pass/fail is unknown; call these out separately rather than folding them
    into the failure-cause breakdown.
 
-3. **Extract root failures** (for classification):
+3. **Flag newly-introduced failures (optional, only if a previous run exists).**
+   Ask the script for the most recent prior unique CSV in the working folder:
+   ```bash
+   python3 "$SKILL_DIR/scripts/compare_new_failures.py" \
+     --current "failed_specs_unique_$PID.csv" --detect-only
+   ```
+   - If it prints a path, that's the last run's unique CSV (by creation time).
+     Use **AskUserQuestion** to ask the user whether to compare this pipeline
+     against that file. Only ask when a path is printed — first-time runners
+     (no prior file) skip this entirely and every `New failure` stays `N/A`.
+   - If the user says yes, populate the `New failure` column deterministically:
+     ```bash
+     python3 "$SKILL_DIR/scripts/compare_new_failures.py" \
+       --current "failed_specs_unique_$PID.csv" --previous "<detected-file>"
+     ```
+     `New failure` becomes `yes` for specs that failed this run but not in the
+     previous one, `no` for specs failing in both. The comparison needs only
+     the `Failed spec` column in each CSV, so it survives column changes.
+   - If the user declines (or no prior file), leave the column as `N/A`.
+
+   Newly-introduced failures (`yes`) are the highest-signal specs — surface
+   them prominently in the final summary.
+
+4. **Extract root failures** (for classification):
    ```bash
    python3 "$SKILL_DIR/scripts/extract_failures.py" <pipeline> \
      [-p <group/project>]
@@ -69,7 +94,7 @@ overwrites a previous run. Let `PID` be that pipeline id.
    spec itself), and all distinct error signatures. The JSON header also
    carries the pipeline's commit `sha` — the exact code the pipeline ran.
 
-4. **Classify each unique spec — from test intent, not just the raw error.**
+5. **Classify each unique spec — from test intent, not just the raw error.**
    Read `failures_raw_$PID.json` and apply `reference/failure_taxonomy.md`.
    The raw error alone is misleading: `expected false to be true` can be a
    route assertion, a store check, or anything — you MUST know what the test
@@ -106,7 +131,7 @@ overwrites a previous run. Let `PID` be that pipeline id.
    `{ "<spec>.cy.js": {"failure_cause": "<cause>", "bug_likelihood": "LOW|MEDIUM|HIGH"} }`
    (a plain string value is still accepted and leaves the likelihood blank).
 
-5. **Annotate the CSV.**
+6. **Annotate the CSV.**
    ```bash
    python3 "$SKILL_DIR/scripts/annotate_failure_cause.py" \
      --mapping "mapping_$PID.json" --csv "failed_specs_unique_$PID.csv"
@@ -115,11 +140,13 @@ overwrites a previous run. Let `PID` be that pipeline id.
    Re-run after edits; any spec missing from the mapping shows as
    `UNCLASSIFIED`, so resolve those before finishing.
 
-6. **Summarize.** Give the user a breakdown grouped by `failure_cause` with
-   counts and the spec lists, and call out: the **HIGH bug-likelihood specs
-   first** (these are the ones worth re-running locally to catch real bugs),
-   then the dominant *actionable* cluster, what's a cascade of it, and what's
-   pre-existing/unrelated. Note classification confidence where you hedged.
+7. **Summarize.** Give the user a breakdown grouped by `failure_cause` with
+   counts and the spec lists, and call out: **newly-introduced failures
+   (`New failure: yes`) and HIGH bug-likelihood specs first** (these are the
+   ones worth re-running locally to catch real bugs — and a HIGH that is also
+   a new failure is the top priority), then the dominant *actionable* cluster,
+   what's a cascade of it, and what's pre-existing/unrelated. Note
+   classification confidence where you hedged.
 
 ## Reading the code at the pipeline's commit
 
@@ -142,7 +169,7 @@ most spec assertions delegate to them, so the real asserted behavior is
 usually there (e.g. `selectProtocol` with `willRejectEntering: true` asserts
 `cy.testRoute('projects')`, i.e. "the app should NOT have navigated").
 
-7. **Offer a ticket.** Identify the most actionable cluster (usually the largest
+8. **Offer a ticket.** Identify the most actionable cluster (usually the largest
    group of related *root* failures). Use AskUserQuestion to ask whether to open
    a GitLab issue for it. If yes, draft from `reference/ticket_template.md`
    (concrete specs + the exact error signature + first_failed_job_url repro
@@ -158,10 +185,11 @@ usually there (e.g. `selectProtocol` with `willRejectEntering: true` asserts
 
 - `failed_specs_$PID.csv` — per-job/retry rows.
 - `failed_specs_unique_$PID.csv` — deduped, fixed column order:
-  `Failed spec, Passed on retry, bug_likelihood_(AI), Note, failure_cause,
-  first_failed_job_url`. `bug_likelihood_(AI)` and `failure_cause` are empty
-  until step 5 annotates them (HIGH = likely real app bug, re-run locally
-  first; LOW = likely Cypress glitch/cascade/flake).
+  `Failed spec, Passed on retry, New failure, bug_likelihood_(AI), Note,
+  failure_cause, first_failed_job_url`. `New failure` (step 3) is `yes`/`no`
+  vs the previous run or `N/A` if not compared; `bug_likelihood_(AI)` and
+  `failure_cause` are empty until step 6 annotates them (HIGH = likely real
+  app bug, re-run locally first; LOW = likely Cypress glitch/cascade/flake).
 - `failures_raw_$PID.json`, `mapping_$PID.json` — intermediate working files
   (safe to delete). All filenames are suffixed with the pipeline id so
   re-running for a different pipeline in the same folder doesn't clobber a

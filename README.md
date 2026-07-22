@@ -64,19 +64,24 @@ From any directory (CSVs are written to the current directory):
 ```bash
 SKILL=~/.claude/skills/gitlab-pipeline-analysis
 
-# 1. Failed-spec CSVs
-python3 "$SKILL/scripts/pipeline_failed_specs.py" 2635113652 \
-  -o failed_specs.csv -u failed_specs_unique.csv
+# 1. Failed-spec CSVs (defaults: failed_specs_<pid>.csv, failed_specs_unique_<pid>.csv)
+python3 "$SKILL/scripts/pipeline_failed_specs.py" 2635113652
 
-# 2. Root failure per spec (for classification)
-python3 "$SKILL/scripts/extract_failures.py" 2635113652 -o failures_raw.json
+# 2. Flag specs that are new vs the previous run (populates the New failure column).
+#    Auto-detects the most recent prior failed_specs_unique_*.csv in the folder;
+#    --detect-only just prints it. Omit/skip on a first-ever run (stays N/A).
+python3 "$SKILL/scripts/compare_new_failures.py" \
+  --current failed_specs_unique_2635113652.csv
 
-# 3. Classify failures_raw.json against reference/failure_taxonomy.md, write
-#    mapping.json = { "<spec>.cy.js": "<cause>", ... }   (this is the judgement step)
+# 3. Root failure per spec (for classification)
+python3 "$SKILL/scripts/extract_failures.py" 2635113652
 
-# 4. Add the failure_cause column
+# 4. Classify failures_raw_<pid>.json against reference/failure_taxonomy.md, write
+#    mapping_<pid>.json = { "<spec>.cy.js": {"failure_cause": "...", "bug_likelihood": "LOW|MEDIUM|HIGH"} }
+
+# 5. Add the failure_cause + bug_likelihood_(AI) columns
 python3 "$SKILL/scripts/annotate_failure_cause.py" \
-  --mapping mapping.json --csv failed_specs_unique.csv
+  --mapping mapping_2635113652.json --csv failed_specs_unique_2635113652.csv
 ```
 
 A pipeline URL works in place of the number. Use `-p group/project` for a
@@ -86,13 +91,16 @@ globs (set `PARATOO_WEBAPP_INTEGRATION_DIR` to point at a checkout).
 
 ## How classification works
 
-Steps 1, 2 and 4 are deterministic scripts. **Step 3 is judgement** — reading the
-captured errors and deciding root cause vs. cascade vs. flake — which is why the
-skill drives it through Claude using
+The extraction, new-failure comparison, and annotation scripts are
+deterministic. **Classification is judgement** — reading the captured errors
+(and, for anything that isn't a known Cypress-glitch signature, the spec/custom-
+command code at the pipeline's commit) to decide root cause vs. cascade vs.
+flake and a `bug_likelihood_(AI)` of LOW/MEDIUM/HIGH — which is why the skill
+drives it through Claude using
 [`reference/failure_taxonomy.md`](reference/failure_taxonomy.md). The taxonomy
-maps common error signatures to concise labels and encodes the rules (root vs
-cascade, flaky-on-retry, pre-existing/unrelated). Extend it as new patterns show
-up.
+maps common error signatures to labels, separates Cypress glitches from real app
+bugs, and encodes the rules (root vs cascade, flaky-on-retry, stale-test vs
+regression). Extend it as new patterns show up.
 
 ## Repo layout
 
@@ -100,11 +108,12 @@ up.
 SKILL.md                          # the skill: workflow Claude follows
 README.md
 scripts/
-  pipeline_failed_specs.py        # → failed_specs_<pipeline>.csv + failed_specs_unique_<pipeline>.csv
-  extract_failures.py             # → failures_raw_<pipeline>.json (root failure per spec)
-  annotate_failure_cause.py       # mapping.json → failure_cause column
+  pipeline_failed_specs.py        # → failed_specs_<pid>.csv + failed_specs_unique_<pid>.csv
+  compare_new_failures.py         # New failure column: yes/no/N/A vs the previous run
+  extract_failures.py             # → failures_raw_<pid>.json (root failure + spec code refs)
+  annotate_failure_cause.py       # mapping_<pid>.json → failure_cause + bug_likelihood_(AI)
 reference/
-  failure_taxonomy.md             # signatures → cause labels + classification rules
+  failure_taxonomy.md             # signatures → cause labels + bug-likelihood rubric
   ticket_template.md              # structure for the GitLab issue
 examples/
   failed_specs_unique.example.csv # sample annotated output
