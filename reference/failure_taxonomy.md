@@ -10,21 +10,40 @@ This list is meant to grow — add recurring signatures your team sees.
 
 ## Golden rules
 
-1. **The raw error message is a starting point, not a verdict.** Before
-   labelling, understand what the failing test was *trying to assert*: read
-   the spec code at `first_error_spec_line` (and the custom command it calls,
-   under `test/cypress/support/`). A bare `expected false to be true` is
-   meaningless until you know it came from, e.g., a route assertion that the
-   app "shouldn't have navigated". The repo is public — see "Reading the code
-   at the pipeline's commit" in SKILL.md.
-2. **Root vs cascade.** One stuck interaction early in a form makes everything
+0. **The error TYPE decides glitch-eligibility — check it FIRST, and never
+   override it.** `extract_failures.py` tags each spec with an `error_kind`:
+   - **`value-mismatch`** (`to deeply equal`, `to equal`, count mismatch, exact
+     text, `expected X to be Y`) → the app produced the wrong value/data. This
+     is a **BUG signal (MEDIUM/HIGH), never a Cypress glitch**, regardless of
+     any UI symptom around it.
+   - **`app-error`** (`Failed to publish/load`, `Unregistered model case`,
+     `Cannot read properties`, `not unique`, persistent app error banner) →
+     bug/environment signal, not a glitch.
+   - **`element-timeout`** (`never found`, `hidden from view`, dropdown races,
+     stepper `continuously found`) → the ONLY kind eligible for the
+     glitch/LOW bucket, and only when the captured error genuinely is that.
+
+   A `value-mismatch` or `app-error` spec that you're tempted to call a
+   dropdown/overlay glitch is the classic bug-masking mistake — stop and read
+   the assertion instead.
+1. **Ground every label in THIS spec's own captured error.** The
+   `failure_cause` must paraphrase this spec's `first_error`/`signatures`.
+   Never borrow an error, selector, or symptom from another spec, from the
+   example phrases below, or from memory. If the cause names something not in
+   this spec's captured error, it's fabricated — remove it.
+2. **The raw error message is a starting point, not a verdict.** Understand
+   what the failing test was *trying to assert*: read the spec code at
+   `first_error_spec_line`/`first_error_frames` (and the custom command it
+   calls). A bare `expected false to be true` is meaningless until you know it
+   came from, e.g., a route assertion that the app "shouldn't have navigated".
+3. **Root vs cascade.** One stuck interaction early in a form makes everything
    after it fail (`element never found`, `stepper step-content continuously
    found`, `cy.filter() requires a DOM element`). Label those `cascade of ...`,
-   not as their own bug.
-3. **Flaky vs hard.** `Passed on retry: yes` in the CSV → `flaky (passed on retry)`.
-4. **Related vs pre-existing.** Keep environment/ordering/test-bug failures out of
+   not as their own bug — but only when there IS a real upstream failure.
+4. **Flaky vs hard.** `Passed on retry: yes` in the CSV → `flaky (passed on retry)`.
+5. **Related vs pre-existing.** Keep environment/ordering/test-bug failures out of
    the headline cluster.
-5. **Stale test vs app bug.** When a *deterministic* assertion fails (exact
+6. **Stale test vs app bug.** When a *deterministic* assertion fails (exact
    text/route/data mismatch, not a timeout), check whether the app behavior
    was intentionally changed: `git log --oneline -S "<asserted text>" --
    <app src>` at the checkout, or search recent MRs. A test asserting removed
@@ -33,7 +52,8 @@ This list is meant to grow — add recurring signatures your team sees.
    differing context" rejection; the quick-swap feature had deliberately
    replaced rejection with auto-switching context, so the app now navigates
    into the workflow and the route assertion fails.
-6. **Be honest about confidence.** `(likely upstream cascade)` is a valid label.
+7. **Be honest about confidence.** `(likely upstream cascade)` is a valid label;
+   `OTHER: <short error>` at MEDIUM is better than a wrong confident glitch label.
 
 ## bug_likelihood_(AI) rubric
 
@@ -43,11 +63,16 @@ so users can locally re-run the HIGH ones first. Assign one of:
 - **HIGH** — evidence points at the app, not the test runner:
   - Deterministic value mismatches: exact-text assertion fails
     (`expected 'X' to equal 'X (suffix)'`), wrong list contents
-    (`expected [Array(26)] to deeply equal ['Forb','Shrub']`), wrong data
-    shape (`Unregistered model case <model>`).
+    (`expected [Array(26)] to deeply equal ['Forb','Shrub']`), wrong **object
+    shape** (`expected {…} to deeply equal {…}` with a `+ expected - actual`
+    diff showing a field added/removed/changed, e.g. `fauna_plot_not_walked`
+    present in actual but not expected → data not persisting/leaking), wrong
+    data shape (`Unregistered model case <model>`).
   - The app displays a real error state (`Failed to load protocol`, setup
     error banner, uncaught app exception in the notification).
   - The same deterministic mismatch appears in 2+ independent specs.
+  - Any `error_kind: value-mismatch` where reading the assertion confirms the
+    app produced the wrong value/shape.
 - **MEDIUM** — deterministic but ambiguous:
   - Count mismatches (`expected 144 to equal 96`) that could be data
     pollution from earlier retries/specs rather than an app defect.
@@ -66,7 +91,11 @@ When in doubt between two levels, pick the higher one and hedge in the
 ## Known Cypress-glitch (false-positive) families → LOW
 
 These recur in this project regardless of app correctness. They are
-interaction/timing races in the test driver, not app bugs:
+interaction/timing races in the test driver, not app bugs. **Only apply these
+when `error_kind` is `element-timeout` AND the spec's own `first_error`
+actually matches the signature** — never attach one of these labels to a
+`value-mismatch`/`app-error` spec, and never to a spec whose captured error
+doesn't contain the signature text:
 
 | Signature (substring) | Suggested label |
 |---|---|

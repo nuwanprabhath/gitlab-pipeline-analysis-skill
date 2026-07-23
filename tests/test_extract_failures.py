@@ -121,5 +121,61 @@ class ParseSpecFailuresTests(unittest.TestCase):
         )
 
 
+class ClassifyErrorKindTests(unittest.TestCase):
+    def test_deep_equal_object_is_value_mismatch(self):
+        self.assertEqual(
+            ef.classify_error_kind(
+                "AssertionError: expected { Object (plot-layout, ...) } to deeply equal { Object (...) }"
+            ),
+            "value-mismatch",
+        )
+
+    def test_count_and_text_mismatches_are_value_mismatch(self):
+        self.assertEqual(ef.classify_error_kind("AssertionError: expected 144 to equal 96"), "value-mismatch")
+        self.assertEqual(
+            ef.classify_error_kind("expected 'Description 2' to equal 'Description 2 (Stratum: Upper Storey)'"),
+            "value-mismatch",
+        )
+        self.assertEqual(ef.classify_error_kind("Not enough elements found. Found '2', expected '3'."), "value-mismatch")
+
+    def test_app_error_states(self):
+        self.assertEqual(ef.classify_error_kind("Error: Failed to publish opportunistic surveys. Value ... is not unique."), "app-error")
+        self.assertEqual(ef.classify_error_kind("There were errors when checking resolved data: Unregistered model case project_name."), "app-error")
+
+    def test_interaction_timeouts_are_element_timeout(self):
+        self.assertEqual(
+            ef.classify_error_kind("CypressError: Timed out retrying after 30050ms: `cy.click()` failed because the center of this element is hidden from view:"),
+            "element-timeout",
+        )
+        self.assertEqual(ef.classify_error_kind("AssertionError: Timed out retrying: Expected to find element: `[data-cy=x]`, but never found it."), "element-timeout")
+        self.assertEqual(ef.classify_error_kind("DropdownError: Expected to find option but found no matches."), "element-timeout")
+
+    def test_none_and_unknown(self):
+        self.assertEqual(ef.classify_error_kind(None), "other")
+        self.assertEqual(ef.classify_error_kind("some unrecognised message"), "other")
+
+    def test_record_gets_error_kind_and_value_mismatch_wins_over_earlier_interaction(self):
+        # first_error is an interaction timeout, but a later signature is a data
+        # mismatch — the record must surface value-mismatch (the bug signal).
+        log = build_log(
+            gitlab_line("  Running:  foo.cy.js"),
+            gitlab_line("  1) first"),
+            gitlab_line("     CypressError: `cy.click()` failed because the center of this element is hidden from view:"),
+            gitlab_line("  2) second"),
+            gitlab_line("     AssertionError: expected { Object } to deeply equal { Object }"),
+        )
+        rec = ef.parse_spec_failures(log, 1, "job")["foo.cy.js"]
+        self.assertEqual(rec["error_kind"], "value-mismatch")
+
+    def test_pure_interaction_spec_stays_element_timeout(self):
+        log = build_log(
+            gitlab_line("  Running:  foo.cy.js"),
+            gitlab_line("  1) first"),
+            gitlab_line("     AssertionError: Timed out retrying: Expected to find element: `[data-cy=x]`, but never found it."),
+        )
+        rec = ef.parse_spec_failures(log, 1, "job")["foo.cy.js"]
+        self.assertEqual(rec["error_kind"], "element-timeout")
+
+
 if __name__ == "__main__":
     unittest.main()

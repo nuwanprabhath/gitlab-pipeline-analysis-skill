@@ -5,6 +5,66 @@ All notable changes to this skill are documented here. Format follows
 [Semantic Versioning](https://semver.org/) and is tracked in the `version`
 field of [`SKILL.md`](SKILL.md)'s frontmatter.
 
+## [1.8.0] - 2026-07-23
+
+### Fixed — real bug masked by a flakier retry
+- `extract_failures.py` only read each job's **latest** attempt. When a job was
+  retried and the latest attempt died earlier than a previous one (e.g. a
+  flaky `cy.click` glitch at test 2.1) it never reached — and thus masked — a
+  real bug an earlier attempt had exposed (a deep-equal data mismatch at test
+  8.2). The tool then reported only the glitch.
+- Now, for each spec still failing in the latest attempt, it scans **all
+  earlier failed attempts** of that job and upgrades to the strongest bug
+  signal across attempts (`value-mismatch`/`app-error` > `element-timeout`).
+  The record keeps `latest_attempt_error` / `latest_attempt_job_id` as a
+  breadcrumb of what the latest attempt showed instead. Specs whose latest
+  attempt passed are still excluded (flaky/passed-on-retry).
+
+## [1.7.0] - 2026-07-23
+
+### Fixed / anti-bias (deterministic enforcement)
+- The 1.6.0 prose guardrails did not stop the LLM re-masking a data-mismatch
+  bug as a Cypress glitch on a fresh run. So the rule is now **enforced in
+  code**, not just documented. New `error_kind_enforce.py` runs automatically
+  inside both `annotate_failure_cause.py` and `export_xlsx.py`
+  (auto-discovering `failures_raw_<pid>.json` — no flag needed):
+  - a `value-mismatch`/`app-error` spec left at LOW/blank is raised to at
+    least **MEDIUM** (it can never be shipped at LOW);
+  - a glitch-style `failure_cause` on such a spec is **replaced with the real
+    captured assertion**, so a hallucinated "covered by popup / dropdown"
+    label can't hide a data bug. The original label is noted for transparency.
+  - Enforcement is idempotent and never touches genuine `element-timeout`
+    glitches (no false positives), and prints an `⚠ Enforced ...` summary.
+- `extract_failures.py` records `bug_signal_error` — the specific signature
+  that made a spec a bug signal — so the enforced cause quotes the real
+  assertion even when the mismatch was promoted from a later signature behind
+  a masking interaction line.
+
+## [1.6.0] - 2026-07-23
+
+### Fixed / anti-bias
+- **Stop masking real bugs as Cypress glitches.** A data-mismatch failure
+  (`expected {…} to deeply equal {…}`) was being labelled as a UI-overlay
+  glitch and rated LOW — with a fabricated cause that referenced a selector
+  not present anywhere in that spec's trace. Root cause was classification
+  bias + cross-spec/hallucinated causes, not extraction (the extractor had
+  captured the correct error). Mitigations:
+  - `extract_failures.py` now tags each spec with a deterministic **`error_kind`**
+    (`value-mismatch` / `app-error` = real-bug signal; `element-timeout` =
+    the only glitch-eligible kind; `other`). It prints a "BUG-SIGNAL specs"
+    list. `error_kind` surfaces the strongest bug signal among a spec's
+    signatures, so a value/data mismatch can't be buried behind an earlier
+    recovered interaction warning.
+  - SKILL.md classification step: **hard grounding rules** — classify each
+    spec only from its own captured error; never import a cause/selector from
+    another spec, the taxonomy examples, or memory; `error_kind` gates the
+    glitch bucket (value-mismatch/app-error can never be LOW/glitch); plus a
+    self-check before writing the mapping.
+  - `failure_taxonomy.md`: new rule 0 (error TYPE decides glitch-eligibility)
+    and rule 1 (ground labels in this spec's own error); glitch-family table
+    now only applies to `element-timeout` specs; added the object deep-equal
+    HIGH signature.
+
 ## [1.5.0] - 2026-07-23
 
 ### Changed

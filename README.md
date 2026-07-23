@@ -129,6 +129,7 @@ scripts/
   compare_new_failures.py         # New failure column: yes/no/N/A vs the previous run (.csv or .xlsx)
   extract_failures.py             # → failures_raw_<pid>.json (root failure + spec code refs)
   annotate_failure_cause.py       # mapping_<pid>.json → failure_cause + bug_likelihood_(AI)
+  error_kind_enforce.py           # deterministic guard: value/app-error specs can't ship as LOW/glitch
   export_xlsx.py                  # CSV → formatted .xlsx (sort, colours, clickable links)
   xlsx.py                         # tiny dependency-free OOXML reader/writer
 reference/

@@ -25,6 +25,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import xlsx  # noqa: E402
+import error_kind_enforce  # noqa: E402
 
 
 def _find(header_lower, *names):
@@ -112,6 +113,20 @@ def main():
     args = ap.parse_args()
 
     header, data = load_csv(args.csv)
+
+    # Final deterministic backstop before the deliverable is written: a
+    # value-mismatch/app-error spec can never be shipped as a glitch/LOW.
+    # Auto-discovers failures_raw_<pid>.json next to the CSV; no-op if absent
+    # or if this sheet has no bug_likelihood column (e.g. the per-job sheet).
+    corrections = error_kind_enforce.apply_to_csv_rows(args.csv, header, data)
+    if corrections:
+        sys.stderr.write(
+            f"⚠ Enforced {len(corrections)} bug-signal correction(s) before export "
+            "(value-mismatch/app-error specs cannot be LOW/glitch):\n"
+        )
+        for c in corrections:
+            sys.stderr.write(f"  {c}\n")
+
     out_path = args.output or str(Path(args.csv).with_suffix(".xlsx"))
     sheet_name = args.sheet or Path(args.csv).stem
     sheet = build_sheet(header, data, sheet_name)

@@ -24,6 +24,10 @@ import argparse
 import csv
 import json
 import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import error_kind_enforce  # noqa: E402
 
 LIKELIHOOD_COLUMN = "bug_likelihood_(AI)"
 VALID_LIKELIHOODS = {"LOW", "MEDIUM", "HIGH"}
@@ -83,9 +87,22 @@ def main():
         r[likelihood_idx] = likelihood
         out.append(r)
 
+    # Deterministic guardrail: a value-mismatch/app-error spec can't be shipped
+    # as a glitch/LOW. Auto-discovers failures_raw_<pid>.json next to the CSV.
+    corrections = error_kind_enforce.apply_to_csv_rows(args.csv, out[0], out[1:])
+
     dest = args.output or args.csv
     with open(dest, "w", newline="") as fh:
         csv.writer(fh).writerows(out)
+
+    if corrections:
+        sys.stderr.write(
+            f"\n⚠ Enforced {len(corrections)} bug-signal correction(s) "
+            "(value-mismatch/app-error specs cannot be LOW/glitch):\n"
+        )
+        for c in corrections:
+            sys.stderr.write(f"  {c}\n")
+        sys.stderr.write("")
 
     unclassified = [r[spec_idx] for r in out[1:] if r[cause_idx] == args.default]
     no_likelihood = [

@@ -8,7 +8,7 @@ description: >-
   clickable job links, then group failures by root cause and offer to open a
   GitLab issue for the dominant cluster. Use when asked to investigate, analyze,
   triage, or summarize CI / pipeline test failures, or to classify why specs failed.
-version: 1.5.0
+version: 1.8.0
 ---
 
 # GitLab Pipeline Failure Analysis
@@ -99,52 +99,85 @@ in step 7. Let `PID` be the pipeline id.
    the stack frames pointing into repo test code (`first_error_frames`, e.g.
    `test/cypress/support/commands.js:1382` — custom commands hold most
    asserted behavior; `first_error_spec_line` is set when a frame hits the
-   spec itself), and all distinct error signatures. The JSON header also
-   carries the pipeline's commit `sha` — the exact code the pipeline ran.
+   spec itself), an `error_kind` tag (`value-mismatch` / `app-error` =
+   real-bug signal; `element-timeout` = glitch-eligible), and all distinct
+   error signatures. The JSON header also carries the pipeline's commit `sha`
+   — the exact code the pipeline ran. It prints a "BUG-SIGNAL specs" list;
+   none of those may end up labelled a Cypress glitch.
 
-5. **Classify each unique spec — from test intent, not just the raw error.**
+5. **Classify each unique spec — grounded in THAT spec's own captured error.**
    Read `failures_raw_$PID.json` and apply `reference/failure_taxonomy.md`.
-   The raw error alone is misleading: `expected false to be true` can be a
-   route assertion, a store check, or anything — you MUST know what the test
-   was asserting before labelling it. For each failed spec:
 
-   a. Match `first_error` against the taxonomy's known Cypress-glitch families
-      (dropdown races, covered-by-popup clicks, listbox never opening). Those
-      are LOW and need no code dive.
-   b. For everything else — especially bare assertion errors, exact-text or
-      data mismatches, and route/behavior assertions — **read the test code**
-      (see "Reading the code at the pipeline's commit" below): open the
-      files in `first_error_frames` (and `spec_path` at
-      `first_error_spec_line` when set), work out what the test is supposed
-      to verify, and follow any custom command it calls into
-      `test/cypress/support/`. State the test's *intent* in the
-      `failure_cause`, e.g. `app allowed editing collection with differing
-      plot context (guard not enforced or intentionally removed)` — never
-      just `expected false to be true`.
+   **Hard grounding rules (these prevent the failure mode of masking real bugs):**
+   - Classify each spec **only** from its own record (`first_error`,
+     `signatures`, `error_kind`, `first_error_frames`). **Never** import an
+     error string, symptom, or cause from another spec, from the taxonomy's
+     example phrases, or from memory. If your `failure_cause` names something
+     (a selector, a button label, an overlay) that does not appear in this
+     spec's `first_error`/`signatures`, it is wrong — delete it.
+   - **`error_kind` gates the glitch bucket.** Only `error_kind: element-timeout`
+     is eligible to be called a Cypress glitch / LOW. If `error_kind` is
+     **`value-mismatch` or `app-error`, it is a real-bug signal, NOT a glitch**
+     — the app produced wrong data/output. Classify it MEDIUM or HIGH and read
+     the assertion; do not reach for a UI-glitch label no matter what the
+     surrounding UI did. (`extract_failures.py` prints these as "BUG-SIGNAL
+     specs" — none of them may be labelled a glitch.)
+
+   Then, per spec:
+
+   a. Read the actual error type. A deterministic assertion — `to deeply
+      equal`, `to equal`, count mismatch, exact text, `expected X to be Y` —
+      means the app produced the wrong value/shape: a bug (MEDIUM/HIGH), never
+      a glitch. Only an *element-find / interaction timeout* (`never found`,
+      `hidden from view`, dropdown races) may be a glitch — and only if the
+      captured error genuinely is that.
+   b. Understand what the test asserts before labelling — **read the test code**
+      (see "Reading the code at the pipeline's commit"): open the files in
+      `first_error_frames` (and `spec_path` at `first_error_spec_line`), and
+      follow any custom command into `test/cypress/support/`. State the test's
+      *intent* and the concrete discrepancy in the `failure_cause`, e.g.
+      `app data mismatch: fauna_plot_not_walked present in actual but absent
+      in expected (plot layout edit not persisting field)` — quote the real
+      diff, never a generic phrase.
    c. For deterministic behavior mismatches, check whether the app changed
       intentionally (`git log -S "<asserted text>"` on app src at the
-      checkout): if the asserted behavior was deliberately removed/replaced,
-      the verdict is `stale test (app behavior changed: <feature>)`.
+      checkout): a deliberately removed/replaced behavior is
+      `stale test (app behavior changed: <feature>)`.
    d. Distinguish a **root cause** from a **cascade**, mark
       `Passed on retry: yes` specs as `flaky (passed on retry)`, keep
       pre-existing/unrelated failures out of the headline cluster, and hedge
       honestly (`(likely ...)`).
-   e. Assign `bug_likelihood` per the rubric in the taxonomy: HIGH = evidence
-      of a real app bug (deterministic value/text/data mismatches, app error
-      states, corroborated across specs); MEDIUM = deterministic but
-      ambiguous (count mismatches, stale tests, missing UI states); LOW =
-      known Cypress-glitch families, cascades, ordering, test bugs, flaky.
+   e. Assign `bug_likelihood` per the rubric in the taxonomy: HIGH = real app
+      bug (deterministic value/text/data mismatches, app error states,
+      corroborated across specs); MEDIUM = deterministic but ambiguous (count
+      mismatches, stale tests, missing UI states, anything you couldn't fully
+      pin); LOW = **only** genuine `element-timeout` Cypress-glitch families,
+      cascades of one, ordering deps, test bugs, or flaky-passed-on-retry.
+
+   **Self-check before writing the mapping:** for every spec, confirm the
+   `failure_cause` is a paraphrase of that spec's own `first_error`/signatures,
+   and that no `value-mismatch`/`app-error` spec was labelled LOW/glitch. If a
+   cause mentions a UI glitch but `error_kind` is `value-mismatch`, that is the
+   exact bug-masking mistake this step exists to catch — reclassify it.
 
    Write decisions to `mapping_$PID.json` as
    `{ "<spec>.cy.js": {"failure_cause": "<cause>", "bug_likelihood": "LOW|MEDIUM|HIGH"} }`
    (a plain string value is still accepted and leaves the likelihood blank).
+
+   > Note: steps 6 and 7 **deterministically enforce** the bug-signal rule as a
+   > backstop (auto-discovering `failures_raw_$PID.json`): any `value-mismatch`
+   > /`app-error` spec you leave at LOW is raised to MEDIUM, and a glitch-style
+   > cause on such a spec is replaced with its real captured error. Aim to get
+   > it right here anyway — but the deliverable can't ship a masked bug even if
+   > you miss one.
 
 6. **Annotate the CSV.**
    ```bash
    python3 "$SKILL_DIR/scripts/annotate_failure_cause.py" \
      --mapping "mapping_$PID.json" --csv "failed_specs_unique_$PID.csv"
    ```
-   Adds/refreshes both `failure_cause` and `bug_likelihood_(AI)` columns.
+   Adds/refreshes both `failure_cause` and `bug_likelihood_(AI)` columns, then
+   applies the bug-signal enforcement (prints any `⚠ Enforced ...` corrections).
    Re-run after edits; any spec missing from the mapping shows as
    `UNCLASSIFIED`, so resolve those before finishing.
 
