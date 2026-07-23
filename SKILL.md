@@ -2,13 +2,13 @@
 name: gitlab-pipeline-analysis
 description: >-
   Triage failed Cypress specs in a GitLab CI pipeline. Given a pipeline number or
-  URL, generate failed_specs_<pipeline>.csv and failed_specs_unique_<pipeline>.csv
-  (the latter with New failure, failure_cause and bug_likelihood_(AI) columns that
-  flag regressions vs the previous run and separate real app bugs from Cypress
-  glitches), group the failures by root cause, and offer to open a GitLab issue
-  for the dominant cluster. Use when asked to investigate, analyze, triage, or
-  summarize CI / pipeline test failures, or to classify why specs failed.
-version: 1.3.0
+  URL, produce formatted Excel (.xlsx) reports of failed specs with a New failure
+  column (regressions vs the previous run), bug_likelihood_(AI) and failure_cause
+  (separating real app bugs from Cypress glitches), colour-coded cells and
+  clickable job links, then group failures by root cause and offer to open a
+  GitLab issue for the dominant cluster. Use when asked to investigate, analyze,
+  triage, or summarize CI / pipeline test failures, or to classify why specs failed.
+version: 1.5.0
 ---
 
 # GitLab Pipeline Failure Analysis
@@ -26,12 +26,20 @@ optional GitLab ticket for the most actionable cluster.
   every script for a different repo.
 
 Let `SKILL_DIR` be the directory containing this file. Run scripts as
-`python3 "$SKILL_DIR/scripts/<name>.py" ...`. Write CSVs/JSON to the user's
-current working directory (or a path they specify), not into the skill repo.
+`python3 "$SKILL_DIR/scripts/<name>.py" ...`.
 
-All output filenames below are suffixed with the pipeline id by default
-(`_<pipeline>`) so analyzing several pipelines in the same folder never
-overwrites a previous run. Let `PID` be that pipeline id.
+**Write all outputs FLAT into the user's current working directory** (or a
+single path they specify) — never into the skill repo, and **do NOT create a
+per-pipeline subfolder**. Every filename is already suffixed with the pipeline
+id (`_<pipeline>`), so multiple pipelines coexist safely in one folder. This
+matters: the "New failure" comparison (step 3) only scans the *current* folder
+for prior runs, so isolating each run in its own subfolder silently breaks
+regression detection.
+
+A run leaves exactly **two Excel files** in the working directory —
+`failed_specs_<PID>.xlsx` and `failed_specs_unique_<PID>.xlsx`. The CSV and
+JSON files the scripts produce along the way are intermediates and are removed
+in step 7. Let `PID` be the pipeline id.
 
 ## Steps
 
@@ -140,7 +148,24 @@ overwrites a previous run. Let `PID` be that pipeline id.
    Re-run after edits; any spec missing from the mapping shows as
    `UNCLASSIFIED`, so resolve those before finishing.
 
-7. **Summarize.** Give the user a breakdown grouped by `failure_cause` with
+7. **Export the Excel deliverables and clean up intermediates.** Convert both
+   CSVs to formatted workbooks (deleting the source CSVs as they go), then
+   remove the JSON working files — so the run leaves only the two `.xlsx`.
+   ```bash
+   python3 "$SKILL_DIR/scripts/export_xlsx.py" --csv "failed_specs_unique_$PID.csv" --remove-source
+   python3 "$SKILL_DIR/scripts/export_xlsx.py" --csv "failed_specs_$PID.csv" --remove-source
+   rm -f "failures_raw_$PID.json" "mapping_$PID.json"
+   ```
+   The exporter (dependency-free — pure stdlib, runs on any OS) sorts rows
+   alphabetically by spec, makes the job-URL column a clickable hyperlink,
+   fills the cell **red** where `bug_likelihood_(AI)` is HIGH or `New failure`
+   is `yes`, and fills the **row green** where `Passed on retry` is `yes` (red
+   cells win over green). After this step the working directory holds exactly
+   `failed_specs_$PID.xlsx` and `failed_specs_unique_$PID.xlsx` (the latter is
+   the primary deliverable). The next run's step-3 comparison reads this
+   `.xlsx` as the previous run, so nothing else needs to be kept.
+
+8. **Summarize.** Give the user a breakdown grouped by `failure_cause` with
    counts and the spec lists, and call out: **newly-introduced failures
    (`New failure: yes`) and HIGH bug-likelihood specs first** (these are the
    ones worth re-running locally to catch real bugs — and a HIGH that is also
@@ -169,7 +194,7 @@ most spec assertions delegate to them, so the real asserted behavior is
 usually there (e.g. `selectProtocol` with `willRejectEntering: true` asserts
 `cy.testRoute('projects')`, i.e. "the app should NOT have navigated").
 
-8. **Offer a ticket.** Identify the most actionable cluster (usually the largest
+9. **Offer a ticket.** Identify the most actionable cluster (usually the largest
    group of related *root* failures). Use AskUserQuestion to ask whether to open
    a GitLab issue for it. If yes, draft from `reference/ticket_template.md`
    (concrete specs + the exact error signature + first_failed_job_url repro
@@ -183,24 +208,30 @@ usually there (e.g. `selectProtocol` with `willRejectEntering: true` asserts
 
 ## Output recap
 
-- `failed_specs_$PID.csv` — per-job/retry rows.
-- `failed_specs_unique_$PID.csv` — deduped, fixed column order:
+A completed run leaves exactly **two files** in the working directory (both
+suffixed with the pipeline id so runs for different pipelines coexist):
+
+- **`failed_specs_unique_$PID.xlsx`** — the primary deliverable: deduped,
+  sorted by spec, clickable job URLs, red cells for HIGH bug-likelihood / new
+  failures, green rows for flaky (passed-on-retry) specs. Columns:
   `Failed spec, Passed on retry, New failure, bug_likelihood_(AI), Note,
-  failure_cause, first_failed_job_url`. `New failure` (step 3) is `yes`/`no`
-  vs the previous run or `N/A` if not compared; `bug_likelihood_(AI)` and
-  `failure_cause` are empty until step 6 annotates them (HIGH = likely real
-  app bug, re-run locally first; LOW = likely Cypress glitch/cascade/flake).
-- `failures_raw_$PID.json`, `mapping_$PID.json` — intermediate working files
-  (safe to delete). All filenames are suffixed with the pipeline id so
-  re-running for a different pipeline in the same folder doesn't clobber a
-  prior analysis.
+  failure_cause, first_failed_job_url`. `New failure` is `yes`/`no` vs the
+  previous run or `N/A` if not compared; `bug_likelihood_(AI)` is HIGH (likely
+  real app bug, re-run locally first) / MEDIUM / LOW (likely Cypress glitch).
+- **`failed_specs_$PID.xlsx`** — per-job/retry rows, same formatting engine.
+
+Intermediates (`failed_specs*.csv`, `failures_raw_$PID.json`,
+`mapping_$PID.json`) are produced during the run and removed in step 7. The
+next run's comparison reads the previous `.xlsx`, so nothing else is kept.
+
 - Optional: a GitLab issue.
 
 ## Notes
 
 - Only cypress-run / cypress-priority jobs are parsed for specs; non-cypress job
-  failures (commitlint, sonarcloud, setup) appear in `failed_specs_$PID.csv`
-  with an empty spec — mention them but they don't get a `failure_cause`.
+  failures (commitlint, sonarcloud, setup) appear in the per-job sheet
+  (`failed_specs_$PID.xlsx`) with an empty spec — mention them but they don't
+  get a `failure_cause`.
 - Specs with `Note: Unable to find outputs` had a `[SPEC START]` in that job's
   trace but no matching `[SPEC END]` — outcome unknown (crash/timeout/OOM),
   not a confirmed failure.

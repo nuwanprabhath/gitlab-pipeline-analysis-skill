@@ -8,9 +8,10 @@ its failed specs against the PREVIOUS run's unique CSV.
   no   - failed in both this run and the previous run (pre-existing)
   N/A  - no previous run to compare against (first-time run / comparison skipped)
 
-Only the "Failed spec" column is required in either CSV, so this keeps working
-even if other columns are added, removed, or reordered. The column is written
-as the 3rd column if not already present.
+Only the "Failed spec" column is required in either file, so this keeps working
+even if other columns are added, removed, or reordered. The previous run may be
+a .csv (intermediate) or a .xlsx (the exported deliverable) — both are detected
+and read. The column is written as the 3rd column if not already present.
 
 Usage:
   # Compare against an explicit previous CSV:
@@ -32,9 +33,14 @@ import csv
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import xlsx  # noqa: E402  (stdlib-only .xlsx reader, ships with this skill)
+
 NEW_FAILURE_COLUMN = "New failure"
 NEW_FAILURE_POSITION = 2  # third column (0-indexed)
-UNIQUE_CSV_GLOB = "failed_specs_unique_*.csv"
+# A previous run may have been exported to .xlsx (the deliverable) or left as
+# .csv (the intermediate) — detect and read either.
+UNIQUE_GLOBS = ("failed_specs_unique_*.csv", "failed_specs_unique_*.xlsx")
 
 
 def _creation_time(path):
@@ -45,18 +51,19 @@ def _creation_time(path):
 
 
 def find_previous_unique_csv(current_path):
-    """Most-recently-created failed_specs_unique_*.csv in current's folder,
-    excluding current itself. Returns a Path (in the same path style as
-    `current_path`) or None."""
+    """Most-recently-created failed_specs_unique_* file (.csv or .xlsx) in
+    current's folder, excluding current itself. Returns a Path (in the same
+    path style as `current_path`) or None."""
     current = Path(current_path)
     candidates = []
-    for p in current.parent.glob(UNIQUE_CSV_GLOB):
-        try:
-            if p.samefile(current):
-                continue
-        except (FileNotFoundError, OSError):
-            pass
-        candidates.append(p)
+    for pattern in UNIQUE_GLOBS:
+        for p in current.parent.glob(pattern):
+            try:
+                if p.samefile(current):
+                    continue
+            except (FileNotFoundError, OSError):
+                pass
+            candidates.append(p)
     if not candidates:
         return None
     return max(candidates, key=_creation_time)
@@ -73,8 +80,14 @@ def load_rows(path):
 
 
 def read_failed_specs(path):
-    """Return the set of non-empty 'Failed spec' values in a unique CSV."""
-    rows = load_rows(path)
+    """Return the set of non-empty 'Failed spec' values in a unique CSV or
+    .xlsx (only the 'Failed spec' column is needed, so this survives column
+    changes across runs and works regardless of the previous run's format)."""
+    path = Path(path)
+    if path.suffix.lower() == ".xlsx":
+        rows = xlsx.read_sheet(path)
+    else:
+        rows = load_rows(path)
     if not rows:
         return set()
     idx = _spec_index(rows[0])

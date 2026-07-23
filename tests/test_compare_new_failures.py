@@ -11,6 +11,7 @@ SCRIPTS_DIR = Path(__file__).resolve().parent.parent / "scripts"
 sys.path.insert(0, str(SCRIPTS_DIR))
 
 import compare_new_failures as cnf  # noqa: E402
+import xlsx  # noqa: E402
 
 SCRIPT = SCRIPTS_DIR / "compare_new_failures.py"
 
@@ -133,10 +134,45 @@ class FindPreviousTests(unittest.TestCase):
         cur = self._touch("failed_specs_unique_999.csv")
         self.assertIsNone(cnf.find_previous_unique_csv(cur))
 
+    def test_detects_previous_xlsx(self):
+        # a previous run left only an .xlsx deliverable
+        prev = Path(self.tmp.name) / "failed_specs_unique_100.xlsx"
+        xlsx.write_workbook(
+            prev, [xlsx.Sheet("s", [[xlsx.Cell("Failed spec")], [xlsx.Cell("a.cy.js")]])]
+        )
+        cur = self._touch("failed_specs_unique_200.csv")
+        found = cnf.find_previous_unique_csv(cur)
+        self.assertIsNotNone(found)
+        self.assertEqual(found.suffix, ".xlsx")
+
     def _touch_named(self, name):
         p = Path(self.tmp.name) / name
         write_csv(p, ["Failed spec"], [["a.cy.js"]])
         return p
+
+
+class ReadPreviousXlsxTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    def test_read_failed_specs_from_xlsx(self):
+        p = Path(self.tmp.name) / "failed_specs_unique_100.xlsx"
+        xlsx.write_workbook(p, [xlsx.Sheet("s", [
+            [xlsx.Cell("Failed spec"), xlsx.Cell("Passed on retry")],
+            [xlsx.Cell("a.cy.js"), xlsx.Cell("no")],
+            [xlsx.Cell("b.cy.js"), xlsx.Cell("yes (2)")],
+        ])])
+        self.assertEqual(cnf.read_failed_specs(p), {"a.cy.js", "b.cy.js"})
+
+    def test_read_failed_specs_from_xlsx_column_by_name(self):
+        # Failed spec not in the first column — still found by header
+        p = Path(self.tmp.name) / "failed_specs_unique_100.xlsx"
+        xlsx.write_workbook(p, [xlsx.Sheet("s", [
+            [xlsx.Cell("idx"), xlsx.Cell("Failed spec")],
+            [xlsx.Cell("1"), xlsx.Cell("a.cy.js")],
+        ])])
+        self.assertEqual(cnf.read_failed_specs(p), {"a.cy.js"})
 
 
 class CliTests(unittest.TestCase):

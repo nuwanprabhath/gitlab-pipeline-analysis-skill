@@ -2,6 +2,7 @@
 failed_specs.csv
 failed_specs_unique.csv
 failed_specs_*.csv
+failed_specs_*.xlsx
 failures_raw.json
 failures_raw_*.json
 mapping.json

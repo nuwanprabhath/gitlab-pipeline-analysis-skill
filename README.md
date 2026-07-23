@@ -11,9 +11,12 @@ repos can adopt it.
 
 ## What you get
 
-- **`failed_specs.csv`** — one row per failed spec per job (including retries).
-- **`failed_specs_unique.csv`** — deduplicated, with `Passed on retry`,
-  `first_failed_job_url`, and a **`failure_cause`** column.
+- **`failed_specs_unique_<pid>.xlsx`** — the primary deliverable: deduplicated,
+  sorted by spec, with `New failure` (regression vs the previous run),
+  `bug_likelihood_(AI)`, `failure_cause`, clickable job links, red cells for
+  likely-real bugs and green rows for flaky (passed-on-retry) specs.
+- **`failed_specs_<pid>.xlsx`** — one row per failed spec per job (incl. retries).
+- CSV versions of both (the machine-readable working files behind the workbooks).
 - A grouped, human-readable breakdown of failures by cause.
 - (Optional) a drafted, repro-linked GitLab issue for the dominant cluster.
 
@@ -21,7 +24,8 @@ repos can adopt it.
 
 - [`glab`](https://gitlab.com/gitlab-org/cli) installed and authenticated
   (`glab auth login`, verify with `glab auth status`).
-- Python 3.8+.
+- Python 3.8+ — **standard library only, no `pip install`** (the `.xlsx`
+  writer is built in), so it runs on any OS out of the box.
 - Claude Code (to run the skill). The scripts also work standalone (see below).
 
 ## Install (as a Claude Code skill)
@@ -82,7 +86,20 @@ python3 "$SKILL/scripts/extract_failures.py" 2635113652
 # 5. Add the failure_cause + bug_likelihood_(AI) columns
 python3 "$SKILL/scripts/annotate_failure_cause.py" \
   --mapping mapping_2635113652.json --csv failed_specs_unique_2635113652.csv
+
+# 6. Export the formatted Excel deliverables (sorted, coloured, clickable links).
+#    --remove-source deletes each CSV after export; then drop the JSON working
+#    files, leaving only the two .xlsx in the folder.
+python3 "$SKILL/scripts/export_xlsx.py" --csv failed_specs_unique_2635113652.csv --remove-source
+python3 "$SKILL/scripts/export_xlsx.py" --csv failed_specs_2635113652.csv --remove-source
+rm -f failures_raw_2635113652.json mapping_2635113652.json
 ```
+
+Each skill run leaves exactly two files — `failed_specs_unique_<pid>.xlsx`
+(primary) and `failed_specs_<pid>.xlsx` — flat in the working directory. Keep
+all runs in one folder (the pipeline-id suffix prevents collisions) so the
+`New failure` comparison can find prior runs; don't nest runs in per-pipeline
+subfolders.
 
 A pipeline URL works in place of the number. Use `-p group/project` for a
 different repo. If you have a local app checkout, the re-run command resolves
@@ -109,9 +126,11 @@ SKILL.md                          # the skill: workflow Claude follows
 README.md
 scripts/
   pipeline_failed_specs.py        # → failed_specs_<pid>.csv + failed_specs_unique_<pid>.csv
-  compare_new_failures.py         # New failure column: yes/no/N/A vs the previous run
+  compare_new_failures.py         # New failure column: yes/no/N/A vs the previous run (.csv or .xlsx)
   extract_failures.py             # → failures_raw_<pid>.json (root failure + spec code refs)
   annotate_failure_cause.py       # mapping_<pid>.json → failure_cause + bug_likelihood_(AI)
+  export_xlsx.py                  # CSV → formatted .xlsx (sort, colours, clickable links)
+  xlsx.py                         # tiny dependency-free OOXML reader/writer
 reference/
   failure_taxonomy.md             # signatures → cause labels + bug-likelihood rubric
   ticket_template.md              # structure for the GitLab issue
@@ -123,8 +142,9 @@ tests/                             # unit tests for the scripts (stdlib unittest
 ## Development
 
 Unit tests cover the parsing/classification logic in `scripts/` (log parsing,
-retry detection, spec-path resolution, CSV annotation) using only the
-standard library — no dependencies to install. Run them from the repo root:
+retry detection, spec-path resolution, CSV annotation, new-failure comparison,
+and the `.xlsx` reader/writer + formatting) using only the standard library —
+no dependencies to install. Run them from the repo root:
 
 ```bash
 python3 -m unittest discover -s tests -v

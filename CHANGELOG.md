@@ -5,6 +5,52 @@ All notable changes to this skill are documented here. Format follows
 [Semantic Versioning](https://semver.org/) and is tracked in the `version`
 field of [`SKILL.md`](SKILL.md)'s frontmatter.
 
+## [1.5.0] - 2026-07-23
+
+### Changed
+- **A run now leaves only the two `.xlsx` files** in the working directory.
+  The CSVs and JSON files are intermediates: `export_xlsx.py` gained
+  `--remove-source` (deletes the input CSV after a successful export), and the
+  workflow removes `failures_raw_<pid>.json` / `mapping_<pid>.json` at the end.
+- SKILL.md now explicitly requires writing outputs **flat into the current
+  working directory** and forbids creating a per-pipeline subfolder — isolating
+  runs in subfolders silently breaks the `New failure` comparison, which only
+  scans the current folder for prior runs.
+
+## [1.4.1] - 2026-07-23
+
+### Changed
+- Exported `.xlsx` sheets now hide Excel's default cell gridlines
+  (`showGridLines="0"`), so the report reads cleanly and copy-pastes into
+  other/online spreadsheets without stray borders. (No cell borders were ever
+  applied by the styles; this removes the display gridlines.)
+
+## [1.4.0] - 2026-07-23
+
+### Added
+- **Formatted Excel (.xlsx) deliverables.** New `export_xlsx.py` turns a
+  failed-specs CSV into a styled workbook:
+  - rows sorted alphabetically by spec (empty specs last);
+  - the job-URL column rendered as a clickable hyperlink;
+  - cell background **red** where `bug_likelihood_(AI)` is HIGH or
+    `New failure` is `yes`;
+  - whole row background **green** where `Passed on retry` starts with `yes`
+    (red cells win over green);
+  - bold, frozen header and auto-sized columns.
+  `failed_specs_unique_<pid>.xlsx` is now the primary deliverable; the CSVs
+  become intermediate working files.
+- **`xlsx.py`** — a tiny, dependency-free OOXML reader/writer (no `openpyxl`
+  or any pip install), so Excel output works on any OS with a stock Python 3,
+  consistent with the rest of the skill.
+- SKILL.md step 7 exports both workbooks; the Output recap now leads with the
+  `.xlsx` files.
+
+### Changed
+- `compare_new_failures.py` now detects and reads a previous run from either
+  `.csv` or `.xlsx` (auto-detect globs both). Because it reads the previous
+  run's `.xlsx`, the intermediate CSVs are safe to delete between runs — the
+  `New failure` comparison keeps working with only the Excel deliverables kept.
+
 ## [1.3.0] - 2026-07-22
 
 ### Added
