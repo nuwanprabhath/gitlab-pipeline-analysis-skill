@@ -75,6 +75,10 @@ def load_error_kinds(failures_raw_path):
         out[rec.get("spec", "")] = {
             "error_kind": rec.get("error_kind", "other"),
             "first_error": signal,
+            # job_id = the attempt the failure_cause is about (the bug-signal
+            # job); cypress_run_url = that job's Cypress Cloud run link.
+            "job_id": rec.get("job_id"),
+            "cypress_run_url": rec.get("cypress_run_url", ""),
         }
     return out
 

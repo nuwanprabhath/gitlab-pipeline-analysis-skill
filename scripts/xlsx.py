@@ -28,15 +28,20 @@ STYLE_RED = 2           # red background
 STYLE_GREEN = 3         # green background
 STYLE_LINK = 4          # blue underlined (hyperlink), no fill
 STYLE_LINK_GREEN = 5    # hyperlink font on a green background
+STYLE_LINK_RED = 6      # hyperlink font on a red background
 
 
 class Cell:
-    __slots__ = ("value", "style", "hyperlink")
+    __slots__ = ("value", "style", "hyperlink", "display")
 
-    def __init__(self, value="", style=STYLE_DEFAULT, hyperlink=False):
+    def __init__(self, value="", style=STYLE_DEFAULT, hyperlink=False, display=None):
+        # `value` is the cell text (and, for hyperlinks, the link target).
+        # `display` overrides the shown text for a hyperlink (e.g. show a job
+        # number while linking to the full URL).
         self.value = "" if value is None else str(value)
         self.style = style
         self.hyperlink = hyperlink
+        self.display = display
 
 
 class Sheet:
@@ -112,13 +117,14 @@ _STYLES_XML = (
     "</fills>"
     '<borders count="1"><border/></borders>'
     '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>'
-    '<cellXfs count="6">'
+    '<cellXfs count="7">'
     '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>'
     '<xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/>'
     '<xf numFmtId="0" fontId="0" fillId="2" borderId="0" xfId="0" applyFill="1"/>'
     '<xf numFmtId="0" fontId="0" fillId="3" borderId="0" xfId="0" applyFill="1"/>'
     '<xf numFmtId="0" fontId="2" fillId="0" borderId="0" xfId="0" applyFont="1"/>'
     '<xf numFmtId="0" fontId="2" fillId="3" borderId="0" xfId="0" applyFont="1" applyFill="1"/>'
+    '<xf numFmtId="0" fontId="2" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/>'
     "</cellXfs>"
     '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>'
     "</styleSheet>"
@@ -161,12 +167,15 @@ def _workbook_rels(n_sheets):
 def _cell_xml(ref, cell):
     if cell.hyperlink and cell.value:
         # HYPERLINK() formula keeps the file self-contained (no per-sheet rels)
-        # while still rendering a clickable link in Excel/LibreOffice.
+        # while still rendering a clickable link in Excel/LibreOffice. `display`
+        # sets the shown text (e.g. a job number) while the target stays the URL.
         url = cell.value.replace('"', '""')
-        formula = f'HYPERLINK("{url}","{url}")'
+        shown = cell.display if cell.display is not None else cell.value
+        shown_esc = str(shown).replace('"', '""')
+        formula = f'HYPERLINK("{url}","{shown_esc}")'
         return (
             f'<c r="{ref}" s="{cell.style}" t="str">'
-            f"<f>{escape(formula)}</f><v>{escape(cell.value)}</v></c>"
+            f"<f>{escape(formula)}</f><v>{escape(str(shown))}</v></c>"
         )
     if cell.value == "":
         return f'<c r="{ref}" s="{cell.style}"/>'
@@ -217,7 +226,10 @@ def _auto_widths(sheet, cap=80.0, min_w=8.0):
         longest = 0
         for row in sheet.rows:
             if col < len(row):
-                longest = max(longest, len(row[col].value))
+                cell = row[col]
+                # size to the shown text (a hyperlink shows `display`, not the URL)
+                shown = cell.display if (cell.hyperlink and cell.display is not None) else cell.value
+                longest = max(longest, len(str(shown)))
         widths.append(max(min_w, min(cap, longest + 2)))
     return widths
 

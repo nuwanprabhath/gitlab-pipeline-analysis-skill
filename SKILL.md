@@ -8,7 +8,7 @@ description: >-
   clickable job links, then group failures by root cause and offer to open a
   GitLab issue for the dominant cluster. Use when asked to investigate, analyze,
   triage, or summarize CI / pipeline test failures, or to classify why specs failed.
-version: 1.8.0
+version: 1.9.1
 ---
 
 # GitLab Pipeline Failure Analysis
@@ -57,8 +57,11 @@ in step 7. Let `PID` be the pipeline id.
    `failed_specs_$PID.csv` has one row per failed spec per job/retry;
    `failed_specs_unique_$PID.csv` is deduped with a fixed column order:
    `Failed spec, Passed on retry, New failure, bug_likelihood_(AI), Note,
-   failure_cause, first_failed_job_url` (the last four start blank/`N/A` and
-   are filled by later steps). Specs marked `Passed on retry: yes (...)` are
+   Locally reproducible, failure_cause, cypress_url, first_failed_job_url,
+   second_failed_job_url, third_failed_job_url` (the classification/cypress
+   columns start blank/`N/A` and are filled by later steps;
+   second/third_failed_job_url are populated only when the spec failed in a
+   2nd/3rd retry attempt). Specs marked `Passed on retry: yes (...)` are
    FLAKY, not hard failures. Specs marked `Note: Unable to find outputs`
    started (per a `[SPEC START]` marker) but the job never logged a matching
    `[SPEC END]` — it likely crashed, timed out, or was OOM-killed mid-spec, so
@@ -245,12 +248,20 @@ A completed run leaves exactly **two files** in the working directory (both
 suffixed with the pipeline id so runs for different pipelines coexist):
 
 - **`failed_specs_unique_$PID.xlsx`** — the primary deliverable: deduped,
-  sorted by spec, clickable job URLs, red cells for HIGH bug-likelihood / new
-  failures, green rows for flaky (passed-on-retry) specs. Columns:
+  sorted by spec, red cells for HIGH bug-likelihood / new failures, green rows
+  for flaky (passed-on-retry) specs. Columns:
   `Failed spec, Passed on retry, New failure, bug_likelihood_(AI), Note,
-  failure_cause, first_failed_job_url`. `New failure` is `yes`/`no` vs the
-  previous run or `N/A` if not compared; `bug_likelihood_(AI)` is HIGH (likely
-  real app bug, re-run locally first) / MEDIUM / LOW (likely Cypress glitch).
+  Locally reproducible, failure_cause, cypress_url, first_failed_job_url,
+  second_failed_job_url, third_failed_job_url`.
+  - `New failure` is `yes`/`no` vs the previous run or `N/A` if not compared;
+    `bug_likelihood_(AI)` is HIGH (likely real app bug, re-run locally first) /
+    MEDIUM / LOW (likely Cypress glitch).
+  - `Locally reproducible` is an empty column for the user to fill in.
+  - `first/second/third_failed_job_url` are the spec's failed attempts (job
+    number shown as clickable text → the GitLab job). The one the
+    `failure_cause` came from (the bug-signal attempt) has a **red background**.
+  - `cypress_url` links to that same bug-signal job's Cypress Cloud run
+    (shown as its job number). Empty for crashed jobs with no recording.
 - **`failed_specs_$PID.xlsx`** — per-job/retry rows, same formatting engine.
 
 Intermediates (`failed_specs*.csv`, `failures_raw_$PID.json`,

@@ -18,8 +18,10 @@ NS = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
 
 HEADER = [
     "Failed spec", "Passed on retry", "New failure", "bug_likelihood_(AI)",
-    "Note", "failure_cause", "first_failed_job_url",
+    "Note", "Locally reproducible", "failure_cause", "cypress_url",
+    "first_failed_job_url", "second_failed_job_url", "third_failed_job_url",
 ]
+JOB = "https://gitlab.com/x/-/jobs/"
 
 
 def parse_styles(xlsx_path):
@@ -57,6 +59,11 @@ def parse_styles(xlsx_path):
     return out
 
 
+def mk(spec, passed="no", newfail="no", bug="LOW", cause="c",
+       cypress="", first="", second="", third=""):
+    return [spec, passed, newfail, bug, "", "", cause, cypress, first, second, third]
+
+
 class ExportXlsxTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -69,60 +76,100 @@ class ExportXlsxTests(unittest.TestCase):
             w.writerow(HEADER)
             w.writerows(rows)
 
-    def export(self):
+    def export(self, cause_jobs=None):
         out = self.csv_path.with_suffix(".xlsx")
         header, data = export_xlsx.load_csv(self.csv_path)
-        sheet = export_xlsx.build_sheet(header, data, "s")
+        sheet = export_xlsx.build_sheet(header, data, "s", cause_jobs=cause_jobs)
         xlsx.write_workbook(out, [sheet])
         return out
 
     def test_high_bug_likelihood_cell_is_red(self):
-        self.write([["a.cy.js", "no", "no", "HIGH", "", "cause", "http://x/1"]])
+        self.write([mk("a.cy.js", bug="HIGH", first=JOB + "1")])
         cells = parse_styles(self.export())
         self.assertEqual(cells["a.cy.js"]["bug_likelihood_(AI)"], ("HIGH", str(xlsx.STYLE_RED)))
 
     def test_new_failure_yes_cell_is_red(self):
-        self.write([["a.cy.js", "no", "yes", "LOW", "", "cause", "http://x/1"]])
+        self.write([mk("a.cy.js", newfail="yes", first=JOB + "1")])
         cells = parse_styles(self.export())
         self.assertEqual(cells["a.cy.js"]["New failure"], ("yes", str(xlsx.STYLE_RED)))
 
     def test_passed_on_retry_row_is_green(self):
-        self.write([["a.cy.js", "yes (2) (#9)", "no", "LOW", "", "flaky", "http://x/1"]])
+        self.write([mk("a.cy.js", passed="yes (2) (#9)", first=JOB + "1")])
         cells = parse_styles(self.export())
-        # non-url, non-red cells in the row are green
         self.assertEqual(cells["a.cy.js"]["Failed spec"][1], str(xlsx.STYLE_GREEN))
         self.assertEqual(cells["a.cy.js"]["bug_likelihood_(AI)"][1], str(xlsx.STYLE_GREEN))
         # url cell in a green row uses the link-green style
         self.assertEqual(cells["a.cy.js"]["first_failed_job_url"][1], str(xlsx.STYLE_LINK_GREEN))
 
     def test_red_wins_over_green_in_a_flaky_new_failure_row(self):
-        self.write([["a.cy.js", "yes (2) (#9)", "yes", "LOW", "", "flaky", "http://x/1"]])
+        self.write([mk("a.cy.js", passed="yes (2) (#9)", newfail="yes", first=JOB + "1")])
         cells = parse_styles(self.export())
         self.assertEqual(cells["a.cy.js"]["New failure"][1], str(xlsx.STYLE_RED))
         self.assertEqual(cells["a.cy.js"]["Failed spec"][1], str(xlsx.STYLE_GREEN))
 
-    def test_url_cell_is_hyperlink(self):
-        self.write([["a.cy.js", "no", "no", "LOW", "", "cause", "https://gitlab.com/x/-/jobs/9"]])
+    def test_job_url_shows_job_number_as_link_text(self):
+        self.write([mk("a.cy.js", first=JOB + "15479301209")])
         out = self.export()
         with zipfile.ZipFile(out) as z:
             sheet = z.read("xl/worksheets/sheet1.xml").decode()
-        self.assertIn("HYPERLINK(", sheet)
-        self.assertIn("https://gitlab.com/x/-/jobs/9", sheet)
+        self.assertIn('HYPERLINK("https://gitlab.com/x/-/jobs/15479301209","15479301209")', sheet)
+
+    def test_failure_cause_job_cell_is_red_the_others_are_not(self):
+        # spec failed in 3 attempts; cause is the SECOND one -> that cell red
+        self.write([mk("a.cy.js", first=JOB + "100", second=JOB + "200", third=JOB + "300")])
+        cells = parse_styles(self.export(cause_jobs={"a.cy.js": "200"}))
+        self.assertEqual(cells["a.cy.js"]["first_failed_job_url"][1], str(xlsx.STYLE_LINK))
+        self.assertEqual(cells["a.cy.js"]["second_failed_job_url"][1], str(xlsx.STYLE_LINK_RED))
+        self.assertEqual(cells["a.cy.js"]["third_failed_job_url"][1], str(xlsx.STYLE_LINK))
+
+    def test_passed_on_retry_cell_links_to_passed_job(self):
+        self.write([mk("a.cy.js", passed="yes (2) (#15505213166)", first=JOB + "100")])
+        out = self.export()
+        with zipfile.ZipFile(out) as z:
+            sheet = z.read("xl/worksheets/sheet1.xml").decode()
+        # whole cell links to the passed job's URL; text keeps the yes (N) (#id)
+        self.assertIn(
+            'HYPERLINK("https://gitlab.com/x/-/jobs/15505213166","yes (2) (#15505213166)")',
+            sheet,
+        )
+        cells = parse_styles(out)
+        # flaky row is green, so the link uses the link-green style
+        self.assertEqual(cells["a.cy.js"]["Passed on retry"][1], str(xlsx.STYLE_LINK_GREEN))
+
+    def test_passed_on_retry_no_is_not_a_link(self):
+        self.write([mk("a.cy.js", passed="no", first=JOB + "100")])
+        out = self.export()
+        cells = parse_styles(out)
+        # "no" stays plain text (no hyperlink style)
+        self.assertEqual(cells["a.cy.js"]["Passed on retry"], ("no", str(xlsx.STYLE_DEFAULT)))
+
+    def test_cypress_url_links_with_job_number_text(self):
+        self.write([mk("a.cy.js", cypress="https://cloud.cypress.io/projects/6b9ofw/runs/12361",
+                       first=JOB + "100")])
+        out = self.export(cause_jobs={"a.cy.js": "100"})
+        with zipfile.ZipFile(out) as z:
+            sheet = z.read("xl/worksheets/sheet1.xml").decode()
+        self.assertIn('HYPERLINK("https://cloud.cypress.io/projects/6b9ofw/runs/12361","100")', sheet)
+
+    def test_empty_job_url_cells_are_blank(self):
+        self.write([mk("a.cy.js", first=JOB + "100")])  # no second/third
+        cells = parse_styles(self.export())
+        self.assertEqual(cells["a.cy.js"]["second_failed_job_url"][0], "")
+        self.assertEqual(cells["a.cy.js"]["third_failed_job_url"][0], "")
 
     def test_rows_sorted_alphabetically_specs_empty_last(self):
         self.write([
-            ["zebra.cy.js", "no", "no", "LOW", "", "c", "http://x/1"],
-            ["alpha.cy.js", "no", "no", "LOW", "", "c", "http://x/2"],
-            ["", "no", "", "", "", "", ""],  # non-cypress job, empty spec
-            ["mid.cy.js", "no", "no", "LOW", "", "c", "http://x/3"],
+            mk("zebra.cy.js", first=JOB + "1"),
+            mk("alpha.cy.js", first=JOB + "2"),
+            mk(""),  # non-cypress job, empty spec
+            mk("mid.cy.js", first=JOB + "3"),
         ])
-        out = self.export()
-        back = xlsx.read_sheet(out)
+        back = xlsx.read_sheet(self.export())
         specs = [r[0] for r in back[1:]]
         self.assertEqual(specs, ["alpha.cy.js", "mid.cy.js", "zebra.cy.js", ""])
 
     def test_cli_default_output_path(self):
-        self.write([["a.cy.js", "no", "no", "LOW", "", "c", "http://x/1"]])
+        self.write([mk("a.cy.js", first=JOB + "1")])
         r = subprocess.run(
             [sys.executable, str(SCRIPT), "--csv", str(self.csv_path)],
             capture_output=True, text=True,
@@ -132,7 +179,7 @@ class ExportXlsxTests(unittest.TestCase):
         self.assertTrue(self.csv_path.exists())  # source kept by default
 
     def test_remove_source_deletes_csv_after_export(self):
-        self.write([["a.cy.js", "no", "no", "LOW", "", "c", "http://x/1"]])
+        self.write([mk("a.cy.js", first=JOB + "1")])
         r = subprocess.run(
             [sys.executable, str(SCRIPT), "--csv", str(self.csv_path), "--remove-source"],
             capture_output=True, text=True,
@@ -143,8 +190,7 @@ class ExportXlsxTests(unittest.TestCase):
         self.assertFalse(self.csv_path.exists())  # source removed
 
     def test_remove_source_keeps_output_when_csv_is_the_target(self):
-        # guard: never delete the file we just wrote if paths coincide
-        self.write([["a.cy.js", "no", "no", "LOW", "", "c", "http://x/1"]])
+        self.write([mk("a.cy.js", first=JOB + "1")])
         out = self.csv_path.with_suffix(".xlsx")
         r = subprocess.run(
             [sys.executable, str(SCRIPT), "--csv", str(self.csv_path),

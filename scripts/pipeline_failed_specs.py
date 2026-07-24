@@ -394,35 +394,32 @@ def main():
         else:
             passed_on_retry[spec] = "no"
 
-    def find_first_failed_job_id(spec):
-        """Return the job_id of the chronologically earliest attempt where this spec failed."""
-        first_job_id = None
-        first_created_at = None
+    def find_failed_job_ids(spec):
+        """Return the job_ids of every attempt where this spec failed, in
+        chronological order (earliest first) — one per attempt across the job
+        names that ran it (i.e. retries)."""
+        seen = []
         for job_name in spec_to_job_names.get(spec, []):
             for attempt in jobs_by_name[job_name]:  # already sorted by created_at
                 if attempt["id"] in failed_specs_by_job_id and spec in failed_specs_by_job_id[attempt["id"]]:
-                    if first_created_at is None or attempt["created_at"] < first_created_at:
-                        first_created_at = attempt["created_at"]
-                        first_job_id = attempt["id"]
-                    break  # earliest for this job_name found; move to next job_name
-        return first_job_id
+                    seen.append((attempt["created_at"], attempt["id"]))
+        return [jid for _, jid in sorted(seen)]
 
-    first_failed_job_url = {}
+    def job_url(job_id):
+        return f"{GITLAB_BASE_URL}/{args.project}/-/jobs/{job_id}"
+
+    failed_job_urls = {}  # spec -> [first, second, third] URLs (padded to 3)
     for spec in unique_specs:
-        job_id = find_first_failed_job_id(spec)
-        if job_id is not None:
-            first_failed_job_url[spec] = f"{GITLAB_BASE_URL}/{args.project}/-/jobs/{job_id}"
-        else:
-            first_failed_job_url[spec] = ""
+        ids = find_failed_job_ids(spec)[:3]
+        failed_job_urls[spec] = [job_url(j) for j in ids] + [""] * (3 - len(ids))
 
     resolved, unresolved = resolve_spec_paths(unique_specs, known_paths=known_spec_paths)
 
-    # `New failure`, `bug_likelihood_(AI)` and `failure_cause` are written as
-    # placeholders here and filled in later by separate steps (which update
-    # columns in place): compare_new_failures.py sets `New failure`, and
-    # annotate_failure_cause.py sets the other two. Emitting all columns
-    # up-front fixes the final column order regardless of when those run.
-    # `New failure` defaults to N/A (= not compared / no previous run).
+    # Columns filled in later by separate steps (each updates columns in place):
+    # compare_new_failures.py -> New failure; annotate_failure_cause.py ->
+    # failure_cause, bug_likelihood_(AI), cypress_url; export_xlsx -> presentation.
+    # Emitting all columns up-front fixes the final order. `Locally reproducible`
+    # is intentionally left blank for the user to fill in.
     unique_rows = [
         {
             "Failed spec": spec,
@@ -430,8 +427,12 @@ def main():
             "New failure": "N/A",
             "bug_likelihood_(AI)": "",
             "Note": MISSING_OUTPUT_NOTE if spec in missing_output_specs else "",
+            "Locally reproducible": "",
             "failure_cause": "",
-            "first_failed_job_url": first_failed_job_url[spec],
+            "cypress_url": "",
+            "first_failed_job_url": failed_job_urls[spec][0],
+            "second_failed_job_url": failed_job_urls[spec][1],
+            "third_failed_job_url": failed_job_urls[spec][2],
         }
         for spec in unique_specs
     ]
@@ -440,7 +441,8 @@ def main():
             fh,
             fieldnames=[
                 "Failed spec", "Passed on retry", "New failure", "bug_likelihood_(AI)",
-                "Note", "failure_cause", "first_failed_job_url",
+                "Note", "Locally reproducible", "failure_cause", "cypress_url",
+                "first_failed_job_url", "second_failed_job_url", "third_failed_job_url",
             ],
         )
         writer.writeheader()

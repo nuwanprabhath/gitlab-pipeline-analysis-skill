@@ -20,6 +20,7 @@ library is used, so this runs on any OS with a stock Python 3.
 """
 import argparse
 import csv
+import re
 import sys
 from pathlib import Path
 
@@ -51,7 +52,29 @@ def load_csv(path):
     return rows[0], rows[1:]
 
 
-def build_sheet(header, data, sheet_name):
+_JOB_NUM_RE = re.compile(r"/jobs/(\d+)")
+_RETRY_JOB_RE = re.compile(r"#(\d+)")
+
+
+def _job_num(url):
+    m = _JOB_NUM_RE.search(url or "")
+    return m.group(1) if m else (url or "")
+
+
+def _passed_on_retry_url(retry_value, sample_job_url):
+    """Build the URL of the job the spec PASSED on, from a `Passed on retry`
+    value like `yes (2) (#15505213166)` and any job URL in the same row (to
+    borrow the project/host base). Returns '' when not applicable."""
+    m = _RETRY_JOB_RE.search(retry_value or "")
+    if not m or not sample_job_url or "/jobs/" not in sample_job_url:
+        return ""
+    return _JOB_NUM_RE.sub(f"/jobs/{m.group(1)}", sample_job_url, count=1)
+
+
+def build_sheet(header, data, sheet_name, cause_jobs=None):
+    """cause_jobs: optional {spec: job_id} — the failure-cause (bug-signal)
+    job, so the matching one of the three job-URL cells is highlighted red."""
+    cause_jobs = cause_jobs or {}
     header_lower = [h.strip().lower() for h in header]
     spec_idx = _find(header_lower, "failed spec")
     if spec_idx is None:
@@ -59,7 +82,8 @@ def build_sheet(header, data, sheet_name):
     likelihood_idx = _find(header_lower, "bug_likelihood_(ai)", "bug_likelihood")
     newfail_idx = _find(header_lower, "new failure")
     retry_idx = _find(header_lower, "passed on retry")
-    url_idx = _find_contains(header_lower, "url")
+    cypress_idx = _find(header_lower, "cypress_url")
+    job_url_idxs = {i for i, h in enumerate(header_lower) if h.endswith("_failed_job_url")}
 
     # Sort alphabetically by spec; empty specs last.
     def sort_key(row):
@@ -71,22 +95,48 @@ def build_sheet(header, data, sheet_name):
     out_rows = [[xlsx.Cell(h, xlsx.STYLE_HEADER) for h in header]]
     for row in data:
         row = row + [""] * (len(header) - len(row))
+        spec = row[spec_idx].strip()
+        cause_job = str(cause_jobs.get(spec) or "")
         row_green = (
             retry_idx is not None
             and row[retry_idx].strip().lower().startswith("yes")
         )
+        # a job URL from this row, used to build the passed-on-retry job link
+        sample_job_url = next(
+            (row[j].strip() for j in sorted(job_url_idxs) if row[j].strip().startswith("http")),
+            "",
+        )
         cells = []
         for i, value in enumerate(row):
             value = value.strip()
-            is_url = url_idx is not None and i == url_idx and value.startswith("http")
-            red = (
+            if i == retry_idx and value.lower().startswith("yes"):
+                # Link the whole cell to the job the spec passed on (keep the
+                # `yes (N) (#id)` text). Row is green (flaky) so use link-green.
+                passed_url = _passed_on_retry_url(value, sample_job_url)
+                if passed_url:
+                    style = xlsx.STYLE_LINK_GREEN if row_green else xlsx.STYLE_LINK
+                    cells.append(xlsx.Cell(passed_url, style, hyperlink=True, display=value))
+                else:
+                    cells.append(xlsx.Cell(value, xlsx.STYLE_GREEN if row_green else xlsx.STYLE_DEFAULT))
+            elif i in job_url_idxs and value.startswith("http"):
+                # Show the job number; link to the full URL. The cell for the
+                # job the failure_cause is about gets a red background.
+                num = _job_num(value)
+                if num and num == cause_job:
+                    style = xlsx.STYLE_LINK_RED
+                elif row_green:
+                    style = xlsx.STYLE_LINK_GREEN
+                else:
+                    style = xlsx.STYLE_LINK
+                cells.append(xlsx.Cell(value, style, hyperlink=True, display=num))
+            elif i == cypress_idx and value.startswith("http"):
+                # Cypress Cloud link; show the failure-cause job number as text.
+                style = xlsx.STYLE_LINK_GREEN if row_green else xlsx.STYLE_LINK
+                cells.append(xlsx.Cell(value, style, hyperlink=True, display=cause_job or "cypress"))
+            elif (
                 (likelihood_idx is not None and i == likelihood_idx and value.upper() == "HIGH")
                 or (newfail_idx is not None and i == newfail_idx and value.lower() == "yes")
-            )
-            if is_url:
-                style = xlsx.STYLE_LINK_GREEN if row_green else xlsx.STYLE_LINK
-                cells.append(xlsx.Cell(value, style, hyperlink=True))
-            elif red:
+            ):
                 cells.append(xlsx.Cell(value, xlsx.STYLE_RED))
             elif row_green:
                 cells.append(xlsx.Cell(value, xlsx.STYLE_GREEN))
@@ -127,9 +177,18 @@ def main():
         for c in corrections:
             sys.stderr.write(f"  {c}\n")
 
+    # Which of the three job-URL cells the failure_cause is about (the
+    # bug-signal job) — that cell is highlighted red. From failures_raw.
+    cause_jobs = {}
+    fr = error_kind_enforce.discover_failures_raw(args.csv)
+    if fr:
+        for spec, info in error_kind_enforce.load_error_kinds(fr).items():
+            if info.get("job_id"):
+                cause_jobs[spec] = info["job_id"]
+
     out_path = args.output or str(Path(args.csv).with_suffix(".xlsx"))
     sheet_name = args.sheet or Path(args.csv).stem
-    sheet = build_sheet(header, data, sheet_name)
+    sheet = build_sheet(header, data, sheet_name, cause_jobs=cause_jobs)
     xlsx.write_workbook(out_path, [sheet])
     sys.stderr.write(f"Wrote {len(data)} row(s) to {out_path}\n")
 

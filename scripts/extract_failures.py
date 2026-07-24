@@ -101,6 +101,17 @@ def classify_error_kind(text):
     if _INTERACTION_RE.search(text):
         return "element-timeout"
     return "other"
+# Cypress Cloud run URL, printed once near the top of a recorded run's trace:
+#   │ Run URL:        https://cloud.cypress.io/projects/6b9ofw/runs/12361 │
+CYPRESS_RUN_URL_RE = re.compile(r"Run URL:\s*(https?://\S*?cypress\.io/\S+)")
+
+
+def parse_cypress_run_url(trace):
+    """Return the Cypress Cloud run URL for a job trace, or '' if not recorded."""
+    m = CYPRESS_RUN_URL_RE.search(ANSI_RE.sub("", trace))
+    return m.group(1).rstrip("│ ") if m else ""
+
+
 # Stack frame referencing repo test code (the spec itself or a custom command
 # under test/cypress/support/) — NOT node_modules or the cypress runner, e.g.
 #   at Context.eval (webpack://monitor-webapp/./test/cypress/integration/priority/plot-context.cy.js:383:9)
@@ -151,7 +162,8 @@ def cypress_job_attempts(project, pipeline_id):
 
 def parse_spec_failures(trace, job_id, job_name):
     """Return OrderedDict spec -> {job_id, job_name, spec_path, first_test,
-    first_error, first_error_spec_line, signatures}."""
+    first_error, first_error_spec_line, cypress_run_url, signatures}."""
+    cypress_run_url = parse_cypress_run_url(trace)
     lines = [clean(line) for line in trace.splitlines()]
     cur = None
     spec_paths = {}
@@ -194,7 +206,7 @@ def parse_spec_failures(trace, job_id, job_name):
             {"spec": cur, "spec_path": None, "job_id": job_id, "job_name": job_name,
              "first_test": None, "first_error": None, "first_error_spec_line": None,
              "first_error_frames": [], "error_kind": "other", "bug_signal_error": "",
-             "signatures": []},
+             "cypress_run_url": "", "signatures": []},
         )
         if d["first_test"] is None:
             d["first_test"] = title[:200]
@@ -215,6 +227,7 @@ def parse_spec_failures(trace, job_id, job_name):
         if rec["first_error"] is None and rec["signatures"]:
             rec["first_error"] = rec["signatures"][0]
         rec["spec_path"] = spec_paths.get(rec["spec"])
+        rec["cypress_run_url"] = cypress_run_url
         # error_kind reflects the first_error; if that's an interaction timeout
         # but ANY signature is a value/data mismatch, prefer the mismatch (the
         # real failure often follows a recovered/ignored interaction warning).

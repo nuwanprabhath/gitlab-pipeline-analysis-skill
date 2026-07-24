@@ -5,6 +5,37 @@ All notable changes to this skill are documented here. Format follows
 [Semantic Versioning](https://semver.org/) and is tracked in the `version`
 field of [`SKILL.md`](SKILL.md)'s frontmatter.
 
+## [1.9.1] - 2026-07-24
+
+### Added
+- The `Passed on retry` cell is now a **clickable link to the job the spec
+  passed on** (the `#<job_id>` in `yes (N) (#id)`). The link's project/host
+  base is borrowed from the row's own failed-job URL, so it stays
+  project-agnostic; the cell text is unchanged.
+
+## [1.9.0] - 2026-07-24
+
+### Added
+- **Job links now show the job number** as clickable text (linking to the full
+  GitLab job URL) instead of the raw URL.
+- **`second_failed_job_url` / `third_failed_job_url`** columns — a spec's 2nd
+  and 3rd failed retry attempts (populated only when they exist).
+- The one of the three job-link cells that the `failure_cause` came from (the
+  bug-signal attempt) now has a **red background**, so the cell you click pairs
+  with the cause you're reading.
+- **`cypress_url`** column — the failure-cause job's Cypress Cloud run link
+  (extracted from the trace's `Run URL:` line), shown as its job number.
+- **`Locally reproducible`** — an empty column (left of `failure_cause`) for
+  the user to fill in.
+- `extract_failures.py` records `cypress_run_url` per spec; `xlsx.py` gained a
+  hyperlink `display` text option and a red-hyperlink cell style.
+
+### Changed
+- Unique-CSV/XLSX column order is now:
+  `Failed spec, Passed on retry, New failure, bug_likelihood_(AI), Note,
+  Locally reproducible, failure_cause, cypress_url, first_failed_job_url,
+  second_failed_job_url, third_failed_job_url`.
+
 ## [1.8.0] - 2026-07-23
 
 ### Fixed — real bug masked by a flakier retry

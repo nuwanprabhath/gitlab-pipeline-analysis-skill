@@ -87,6 +87,21 @@ def main():
         r[likelihood_idx] = likelihood
         out.append(r)
 
+    # Populate cypress_url (the failure-cause job's Cypress Cloud run link)
+    # from failures_raw, if that column exists. Stored as the full cloud URL;
+    # export renders the link text as the job number.
+    fr = error_kind_enforce.discover_failures_raw(args.csv)
+    if fr:
+        info = error_kind_enforce.load_error_kinds(fr)
+        hl = [h.strip().lower() for h in out[0]]
+        if "cypress_url" in hl:
+            cy_idx = hl.index("cypress_url")
+            for r in out[1:]:
+                r += [""] * (len(out[0]) - len(r))
+                url = (info.get(r[spec_idx].strip()) or {}).get("cypress_run_url", "")
+                if url and not r[cy_idx].strip():
+                    r[cy_idx] = url
+
     # Deterministic guardrail: a value-mismatch/app-error spec can't be shipped
     # as a glitch/LOW. Auto-discovers failures_raw_<pid>.json next to the CSV.
     corrections = error_kind_enforce.apply_to_csv_rows(args.csv, out[0], out[1:])

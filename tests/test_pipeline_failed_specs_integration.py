@@ -97,7 +97,8 @@ class MainIntegrationTests(unittest.TestCase):
             header,
             [
                 "Failed spec", "Passed on retry", "New failure", "bug_likelihood_(AI)",
-                "Note", "failure_cause", "first_failed_job_url",
+                "Note", "Locally reproducible", "failure_cause", "cypress_url",
+                "first_failed_job_url", "second_failed_job_url", "third_failed_job_url",
             ],
         )
 
