@@ -5,6 +5,22 @@ All notable changes to this skill are documented here. Format follows
 [Semantic Versioning](https://semver.org/) and is tracked in the `version`
 field of [`SKILL.md`](SKILL.md)'s frontmatter.
 
+## [1.9.2] - 2026-07-24
+
+### Added
+- **Flaky (passed-on-retry) specs now carry diagnostic detail.** They used to
+  be dropped from `failures_raw` entirely (only latest-attempt failures were
+  kept), leaving `cypress_url` empty and the cause a bare
+  `flaky (passed on retry)`. Now `extract_failures.py` also captures each
+  flaky spec from its **first failed attempt**, so:
+  - `cypress_url` links to that first failed job's Cypress Cloud run;
+  - `failure_cause` is enriched to `flaky (passed on retry) — first failure:
+    <error>` (done deterministically in `annotate_failure_cause.py`);
+  - the first-failed job cell is highlighted red like other cause cells.
+- Flaky specs stay **LOW**: `error_kind_enforce.py` exempts any
+  passed-on-retry row from the bug-signal MEDIUM floor, so a flaky spec whose
+  first failure was a value/data mismatch is not mis-escalated.
+
 ## [1.9.1] - 2026-07-24
 
 ### Added

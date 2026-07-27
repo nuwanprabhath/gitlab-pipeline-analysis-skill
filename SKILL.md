@@ -8,7 +8,7 @@ description: >-
   clickable job links, then group failures by root cause and offer to open a
   GitLab issue for the dominant cluster. Use when asked to investigate, analyze,
   triage, or summarize CI / pipeline test failures, or to classify why specs failed.
-version: 1.9.1
+version: 1.9.2
 ---
 
 # GitLab Pipeline Failure Analysis
@@ -96,8 +96,11 @@ in step 7. Let `PID` be the pipeline id.
    python3 "$SKILL_DIR/scripts/extract_failures.py" <pipeline> \
      [-p <group/project>]
    ```
-   Defaults to writing `failures_raw_$PID.json` (override with `-o`). This
-   uses the LATEST attempt of each cypress job and records, per spec, the
+   Defaults to writing `failures_raw_$PID.json` (override with `-o`). For each
+   spec still failing in the latest attempt it records the strongest bug
+   signal across all failed attempts (so a flaky early glitch can't mask a real
+   bug an earlier attempt exposed); flaky (passed-on-retry) specs are also
+   captured, from their first failed attempt. Per spec it records the
    first failing test, its error line, the spec's repo path (`spec_path`),
    the stack frames pointing into repo test code (`first_error_frames`, e.g.
    `test/cypress/support/commands.js:1382` — custom commands hold most
@@ -262,6 +265,11 @@ suffixed with the pipeline id so runs for different pipelines coexist):
     `failure_cause` came from (the bug-signal attempt) has a **red background**.
   - `cypress_url` links to that same bug-signal job's Cypress Cloud run
     (shown as its job number). Empty for crashed jobs with no recording.
+  - For **flaky (passed-on-retry)** specs, `cypress_url` and the red job cell
+    point at the spec's **first failed attempt**, and `failure_cause` is
+    enriched with that first-failure error (`flaky (passed on retry) — first
+    failure: <error>`) so the flaky behaviour is diagnosable. Flaky specs stay
+    LOW even if that first failure was a value/data mismatch.
 - **`failed_specs_$PID.xlsx`** — per-job/retry rows, same formatting engine.
 
 Intermediates (`failed_specs*.csv`, `failures_raw_$PID.json`,

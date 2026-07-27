@@ -83,6 +83,15 @@ class EnforceTests(unittest.TestCase):
         self.assertEqual(data[0][5], first)
         self.assertEqual(corr2, [])
 
+    def test_passed_on_retry_row_not_floored(self):
+        # a flaky spec whose first failure was a value-mismatch stays LOW
+        r = row("a.cy.js", "LOW", "flaky (passed on retry)")
+        r[1] = "yes (2) (#9)"  # Passed on retry column
+        data = [r]
+        corr = eke.enforce(HEADER, data, self.kinds({"a.cy.js": ("value-mismatch", "expected 1 to equal 2")}))
+        self.assertEqual(data[0][3], "LOW")  # not raised
+        self.assertEqual(corr, [])
+
     def test_spec_not_in_failures_raw_untouched(self):
         data = [row("a.cy.js", "LOW", "whatever")]
         corr = eke.enforce(HEADER, data, {})

@@ -206,7 +206,7 @@ def parse_spec_failures(trace, job_id, job_name):
             {"spec": cur, "spec_path": None, "job_id": job_id, "job_name": job_name,
              "first_test": None, "first_error": None, "first_error_spec_line": None,
              "first_error_frames": [], "error_kind": "other", "bug_signal_error": "",
-             "cypress_run_url": "", "signatures": []},
+             "cypress_run_url": "", "passed_on_retry": False, "signatures": []},
         )
         if d["first_test"] is None:
             d["first_test"] = title[:200]
@@ -280,44 +280,50 @@ def main():
 
     merged = OrderedDict()
     for name, attempts in by_name.items():
-        latest = attempts[-1]
-        if latest["status"] != "failed":
-            continue  # spec(s) passed on the latest retry — flaky, not a hard failure
-
-        sys.stderr.write(f"  parsing latest {latest['id']} ({name})...\n")
-        latest_recs = parse_spec_failures(
-            glab(f"projects/{enc}/jobs/{latest['id']}/trace"), latest["id"], name
-        )
-        if not latest_recs:
+        failed_attempts = [a for a in attempts if a["status"] == "failed"]
+        if not failed_attempts:
             continue
-        for spec, rec in latest_recs.items():
-            merged.setdefault(spec, rec)
+        latest = attempts[-1]
 
-        # A flaky early failure (e.g. a cy.click glitch) in the latest attempt
-        # can die before reaching — and thus mask — a real bug an EARLIER
-        # attempt exposed. So for each spec still failing in the latest attempt,
-        # scan earlier failed attempts and upgrade to the strongest bug signal.
-        for att in attempts[:-1]:
-            if att["status"] != "failed":
-                continue
-            earlier = parse_spec_failures(
-                glab(f"projects/{enc}/jobs/{att['id']}/trace"), att["id"], name
+        # Parse every failed attempt once (oldest -> newest).
+        parsed = {}
+        for a in failed_attempts:
+            sys.stderr.write(f"  parsing {a['id']} ({name})...\n")
+            parsed[a["id"]] = parse_spec_failures(
+                glab(f"projects/{enc}/jobs/{a['id']}/trace"), a["id"], name
             )
-            for spec in latest_recs:
-                cand = earlier.get(spec)
-                if not cand:
+        latest_failed = parsed.get(latest["id"], {}) if latest["status"] == "failed" else {}
+
+        # 1) Specs still failing in the latest attempt = hard failures. A flaky
+        #    early failure (e.g. a cy.click glitch) in the latest attempt can die
+        #    before reaching — and thus mask — a real bug an EARLIER attempt
+        #    exposed, so upgrade to the strongest bug signal across attempts.
+        for spec, rec in latest_failed.items():
+            merged.setdefault(spec, rec)
+            for a in failed_attempts:
+                if a["id"] == latest["id"]:
                     continue
-                cur = merged[spec]
-                if KIND_RANK[cand["error_kind"]] > KIND_RANK[cur["error_kind"]]:
-                    # keep a breadcrumb of what the latest attempt showed instead
-                    cand["latest_attempt_error"] = latest_recs[spec]["first_error"]
+                cand = parsed[a["id"]].get(spec)
+                if cand and KIND_RANK[cand["error_kind"]] > KIND_RANK[merged[spec]["error_kind"]]:
+                    cand["latest_attempt_error"] = latest_failed[spec]["first_error"]
                     cand["latest_attempt_job_id"] = latest["id"]
                     merged[spec] = cand
                     sys.stderr.write(
                         f"    ↑ {spec}: stronger bug signal ({cand['error_kind']}) in "
-                        f"earlier attempt {att['id']} — latest attempt only showed "
-                        f"{cur['error_kind']}\n"
+                        f"earlier attempt {a['id']} — latest attempt only showed "
+                        f"{merged[spec]['error_kind']}\n"
                     )
+
+        # 2) Flaky specs: failed in some attempt but NOT failing in the latest
+        #    attempt (passed on retry). Record from the EARLIEST failed attempt
+        #    so cypress_url / first_error point at the FIRST failure — useful
+        #    for diagnosing the flaky behaviour, even though it stays LOW.
+        for a in failed_attempts:  # oldest first
+            for spec, rec in parsed[a["id"]].items():
+                if spec in latest_failed or spec in merged:
+                    continue
+                rec["passed_on_retry"] = True
+                merged[spec] = rec
 
     pipeline_info = fetch_pipeline_info(args.project, pid)
     out = {
@@ -339,7 +345,10 @@ def main():
         detail = rec["first_error"] or rec["first_test"] or "(no error captured)"
         line = f":{rec['first_error_spec_line']}" if rec["first_error_spec_line"] else ""
         sys.stderr.write(f"  - {rec['spec']}{line} [{rec['error_kind']}]: {detail}\n")
-    bug_signals = [r["spec"] for r in out["specs"] if r["error_kind"] in ("value-mismatch", "app-error")]
+    bug_signals = [
+        r["spec"] for r in out["specs"]
+        if r["error_kind"] in ("value-mismatch", "app-error") and not r.get("passed_on_retry")
+    ]
     if bug_signals:
         sys.stderr.write(
             "\nBUG-SIGNAL specs (deterministic value/data/app-error — NOT Cypress "

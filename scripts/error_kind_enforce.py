@@ -106,6 +106,7 @@ def enforce(header, data_rows, error_kinds):
     spec_i = idx("failed spec")
     bug_i = idx("bug_likelihood_(ai)", "bug_likelihood")
     cause_i = idx("failure_cause")
+    retry_i = idx("passed on retry")
     if spec_i is None or bug_i is None or cause_i is None:
         return []  # not an annotated unique sheet; nothing to enforce
 
@@ -113,6 +114,10 @@ def enforce(header, data_rows, error_kinds):
     for row in data_rows:
         if len(row) <= max(spec_i, bug_i, cause_i):
             row += [""] * (max(spec_i, bug_i, cause_i) + 1 - len(row))
+        # A spec that passed on retry is flaky by definition — leave it LOW even
+        # if its first failure was a value/data mismatch; don't floor it.
+        if retry_i is not None and retry_i < len(row) and row[retry_i].strip().lower().startswith("yes"):
+            continue
         spec = row[spec_i].strip()
         info = error_kinds.get(spec)
         if not info or info["error_kind"] not in BUG_SIGNAL_KINDS:
