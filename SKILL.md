@@ -8,7 +8,7 @@ description: >-
   clickable job links, then group failures by root cause and offer to open a
   GitLab issue for the dominant cluster. Use when asked to investigate, analyze,
   triage, or summarize CI / pipeline test failures, or to classify why specs failed.
-version: 2.0.0
+version: 2.0.1
 ---
 
 # GitLab Pipeline Failure Analysis
@@ -204,7 +204,7 @@ in step 7. Let `PID` be the pipeline id.
    alphabetically by spec and renders each job/cypress link as its **job
    number** (clickable). Cell colours:
    - a job or cypress cell is **red** if the spec FAILED in that attempt;
-     the failure-cause (bug-signal) job cell is additionally **bold**;
+     the failure-cause (bug-signal) job cell is **orange + bold** instead;
    - `Note: JOB CRASHED` cell is red; `bug_likelihood_(AI): HIGH` and
      `New failure: yes` cells are red; a `Passed on retry: yes` row is green;
    - in `all_specs`, each job cell shows `job# (job name)` and is **green if
@@ -273,7 +273,7 @@ suffixed with the pipeline id so runs for different pipelines coexist):
     column for the user to fill in.
   - `first/second_job_url` are the spec's 1st/2nd **attempts** (chronological,
     all runs). A cell is **red** if the spec failed in that attempt; the
-    failure-cause (bug-signal) job is additionally **bold**. `first/second_cypress_url`
+    failure-cause (bug-signal) job is **orange + bold** instead. `first/second_cypress_url`
     are the matching Cypress Cloud runs, coloured the same way. Link text is
     the job number.
   - `Note: JOB CRASHED` (red) = a `[SPEC START]` with no matching `[SPEC END]`.

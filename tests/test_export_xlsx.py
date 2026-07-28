@@ -125,13 +125,14 @@ class ExportXlsxTests(unittest.TestCase):
             sheet = z.read("xl/worksheets/sheet1.xml").decode()
         self.assertIn('HYPERLINK("https://gitlab.com/x/-/jobs/15479301209","15479301209")', sheet)
 
-    def test_failure_cause_job_cell_is_red_and_bold(self):
-        # first attempt passed, second failed and is the cause -> red+bold
+    def test_failure_cause_job_cell_is_orange_and_bold(self):
+        # first attempt passed, second failed and is the cause -> orange+bold
+        # (orange, not red, so the bold link text stays legible)
         self.write([mk("a.cy.js", first=JOB + "100", second=JOB + "200")])
         sr = {"a.cy.js": runs(("100", "PASSED"), ("200", "FAILED"))}
         cells = parse_styles(self.export(cause_jobs={"a.cy.js": "200"}, spec_runs=sr))
         self.assertEqual(cells["a.cy.js"]["first_job_url"][1], str(xlsx.STYLE_LINK))
-        self.assertEqual(cells["a.cy.js"]["second_job_url"][1], str(xlsx.STYLE_LINK_RED_BOLD))
+        self.assertEqual(cells["a.cy.js"]["second_job_url"][1], str(xlsx.STYLE_LINK_ORANGE_BOLD))
 
     def test_passed_on_retry_cell_links_to_passed_job(self):
         self.write([mk("a.cy.js", passed="yes (2) (#15505213166)",

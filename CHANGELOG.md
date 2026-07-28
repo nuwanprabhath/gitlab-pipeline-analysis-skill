@@ -5,6 +5,12 @@ All notable changes to this skill are documented here. Format follows
 [Semantic Versioning](https://semver.org/) and is tracked in the `version`
 field of [`SKILL.md`](SKILL.md)'s frontmatter.
 
+## [2.0.1] - 2026-07-24
+
+### Changed
+- The failure-cause (bug-signal) job cell is now **orange + bold** instead of
+  red + bold — bold blue link text was hard to read on a red fill.
+
 ## [2.0.0] - 2026-07-24
 
 ### Changed (breaking: output format)

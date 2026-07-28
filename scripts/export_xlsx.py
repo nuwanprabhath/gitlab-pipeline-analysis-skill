@@ -136,7 +136,7 @@ def build_sheet(header, data, sheet_name, cause_jobs=None, spec_runs=None):
                 failed = run is not None and run["status"] in ("FAILED", "MISSING")
                 text = f"{num} ({run['job_name']})" if (is_all_specs and run) else num
                 if failed and num == cause_job and not is_all_specs:
-                    style = xlsx.STYLE_LINK_RED_BOLD  # the failure-cause job (failed-specs sheet only)
+                    style = xlsx.STYLE_LINK_ORANGE_BOLD  # the failure-cause job (failed-specs sheet only)
                 elif failed:
                     style = xlsx.STYLE_LINK_RED
                 elif is_all_specs:
