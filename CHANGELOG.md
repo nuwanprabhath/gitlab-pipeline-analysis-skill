@@ -5,6 +5,30 @@ All notable changes to this skill are documented here. Format follows
 [Semantic Versioning](https://semver.org/) and is tracked in the `version`
 field of [`SKILL.md`](SKILL.md)'s frontmatter.
 
+## [2.0.0] - 2026-07-24
+
+### Changed (breaking: output format)
+- The data model is now **all specs × all attempts** (jobs retry once → max 2
+  attempts), parsed from every cypress job trace, not just failed jobs.
+- The second deliverable is now **`all_specs_<pid>.xlsx`** (replaces
+  `failed_specs_<pid>.xlsx`): every spec that ran, sorted, with `first_job_url`
+  / `second_job_url` showing `job# (job name)` — **green** if the spec passed
+  in that attempt, **red** if it failed. Lets you find which job a passed spec
+  ran in.
+- `failed_specs_unique_<pid>` columns changed. `third_failed_job_url` removed
+  (only 2 attempts exist). `first_failed_job_url`/`second_failed_job_url`
+  renamed to **`first_job_url`/`second_job_url`** and now list **all** of the
+  spec's attempts chronologically (not only failed ones), so e.g. a spec that
+  passed attempt 1 and failed attempt 2 shows the passing job first. The single
+  `cypress_url` became **`first_cypress_url`/`second_cypress_url`** (the Cypress
+  Cloud run of each attempt).
+- Cell colours: a job/cypress cell is **red** when the spec FAILED in that
+  attempt (green when it passed); the failure-cause (bug-signal) job cell is
+  additionally **bold**. `Note` value `Unable to find outputs` is now
+  **`JOB CRASHED`** and that cell is red.
+- New sidecar `spec_runs_<pid>.json` carries per-attempt status/job-name/cypress
+  for the exporter; it's removed with the other intermediates in step 7.
+
 ## [1.9.2] - 2026-07-24
 
 ### Added

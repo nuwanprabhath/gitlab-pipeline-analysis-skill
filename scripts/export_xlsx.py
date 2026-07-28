@@ -71,21 +71,39 @@ def _passed_on_retry_url(retry_value, sample_job_url):
     return _JOB_NUM_RE.sub(f"/jobs/{m.group(1)}", sample_job_url, count=1)
 
 
-def build_sheet(header, data, sheet_name, cause_jobs=None):
-    """cause_jobs: optional {spec: job_id} — the failure-cause (bug-signal)
-    job, so the matching one of the three job-URL cells is highlighted red."""
+def _run_at(runs, idx):
+    return runs[idx] if idx < len(runs) else None
+
+
+def build_sheet(header, data, sheet_name, cause_jobs=None, spec_runs=None):
+    """Render a CSV to a Sheet.
+
+    cause_jobs: {spec: job_id} — the failure-cause (bug-signal) job, whose job
+                cell is bolded (and red, since it's a failed attempt).
+    spec_runs:  {spec: [run dicts]} from the sidecar — each run has job_id,
+                job_name, status (PASSED/FAILED/MISSING). `first_job_url` maps
+                to run 0, `second_job_url` to run 1 (same for cypress). Failed
+                attempts get a red cell; passed ones green (all_specs sheet) or
+                a plain/green link (failed-specs sheet).
+    """
     cause_jobs = cause_jobs or {}
+    spec_runs = spec_runs or {}
     header_lower = [h.strip().lower() for h in header]
-    spec_idx = _find(header_lower, "failed spec")
+    spec_idx = _find(header_lower, "failed spec", "spec")
     if spec_idx is None:
         spec_idx = 0
     likelihood_idx = _find(header_lower, "bug_likelihood_(ai)", "bug_likelihood")
     newfail_idx = _find(header_lower, "new failure")
     retry_idx = _find(header_lower, "passed on retry")
-    cypress_idx = _find(header_lower, "cypress_url")
-    job_url_idxs = {i for i, h in enumerate(header_lower) if h.endswith("_failed_job_url")}
+    note_idx = _find(header_lower, "note")
+    # column index -> run index (0=first attempt, 1=second attempt)
+    job_col = {i: (0 if h == "first_job_url" else 1)
+               for i, h in enumerate(header_lower) if h in ("first_job_url", "second_job_url")}
+    cyp_col = {i: (0 if h == "first_cypress_url" else 1)
+               for i, h in enumerate(header_lower) if h in ("first_cypress_url", "second_cypress_url")}
+    # all_specs sheet has no failure_cause column and shows the job name in-cell
+    is_all_specs = "failure_cause" not in header_lower
 
-    # Sort alphabetically by spec; empty specs last.
     def sort_key(row):
         spec = row[spec_idx].strip() if spec_idx < len(row) else ""
         return (spec == "", spec.lower())
@@ -96,43 +114,47 @@ def build_sheet(header, data, sheet_name, cause_jobs=None):
     for row in data:
         row = row + [""] * (len(header) - len(row))
         spec = row[spec_idx].strip()
+        runs = spec_runs.get(spec, [])
         cause_job = str(cause_jobs.get(spec) or "")
-        row_green = (
-            retry_idx is not None
-            and row[retry_idx].strip().lower().startswith("yes")
-        )
-        # a job URL from this row, used to build the passed-on-retry job link
+        row_green = retry_idx is not None and row[retry_idx].strip().lower().startswith("yes")
         sample_job_url = next(
-            (row[j].strip() for j in sorted(job_url_idxs) if row[j].strip().startswith("http")),
-            "",
+            (row[j].strip() for j in sorted(job_col) if row[j].strip().startswith("http")), ""
         )
         cells = []
         for i, value in enumerate(row):
             value = value.strip()
             if i == retry_idx and value.lower().startswith("yes"):
-                # Link the whole cell to the job the spec passed on (keep the
-                # `yes (N) (#id)` text). Row is green (flaky) so use link-green.
                 passed_url = _passed_on_retry_url(value, sample_job_url)
                 if passed_url:
                     style = xlsx.STYLE_LINK_GREEN if row_green else xlsx.STYLE_LINK
                     cells.append(xlsx.Cell(passed_url, style, hyperlink=True, display=value))
                 else:
                     cells.append(xlsx.Cell(value, xlsx.STYLE_GREEN if row_green else xlsx.STYLE_DEFAULT))
-            elif i in job_url_idxs and value.startswith("http"):
-                # Show the job number; link to the full URL. The cell for the
-                # job the failure_cause is about gets a red background.
-                num = _job_num(value)
-                if num and num == cause_job:
+            elif i in job_col and value.startswith("http"):
+                run = _run_at(runs, job_col[i])
+                num = str(run["job_id"]) if run else _job_num(value)
+                failed = run is not None and run["status"] in ("FAILED", "MISSING")
+                text = f"{num} ({run['job_name']})" if (is_all_specs and run) else num
+                if failed and num == cause_job and not is_all_specs:
+                    style = xlsx.STYLE_LINK_RED_BOLD  # the failure-cause job (failed-specs sheet only)
+                elif failed:
                     style = xlsx.STYLE_LINK_RED
+                elif is_all_specs:
+                    style = xlsx.STYLE_LINK_GREEN     # passed attempt
                 elif row_green:
                     style = xlsx.STYLE_LINK_GREEN
                 else:
                     style = xlsx.STYLE_LINK
+                cells.append(xlsx.Cell(value, style, hyperlink=True, display=text))
+            elif i in cyp_col and value.startswith("http"):
+                run = _run_at(runs, cyp_col[i])
+                num = str(run["job_id"]) if run else "cypress"
+                failed = run is not None and run["status"] in ("FAILED", "MISSING")
+                style = (xlsx.STYLE_LINK_RED if failed
+                         else xlsx.STYLE_LINK_GREEN if row_green else xlsx.STYLE_LINK)
                 cells.append(xlsx.Cell(value, style, hyperlink=True, display=num))
-            elif i == cypress_idx and value.startswith("http"):
-                # Cypress Cloud link; show the failure-cause job number as text.
-                style = xlsx.STYLE_LINK_GREEN if row_green else xlsx.STYLE_LINK
-                cells.append(xlsx.Cell(value, style, hyperlink=True, display=cause_job or "cypress"))
+            elif i == note_idx and value == "JOB CRASHED":
+                cells.append(xlsx.Cell(value, xlsx.STYLE_RED))
             elif (
                 (likelihood_idx is not None and i == likelihood_idx and value.upper() == "HIGH")
                 or (newfail_idx is not None and i == newfail_idx and value.lower() == "yes")
@@ -177,8 +199,7 @@ def main():
         for c in corrections:
             sys.stderr.write(f"  {c}\n")
 
-    # Which of the three job-URL cells the failure_cause is about (the
-    # bug-signal job) — that cell is highlighted red. From failures_raw.
+    # The failure-cause (bug-signal) job — its job cell is bolded. From failures_raw.
     cause_jobs = {}
     fr = error_kind_enforce.discover_failures_raw(args.csv)
     if fr:
@@ -186,9 +207,16 @@ def main():
             if info.get("job_id"):
                 cause_jobs[spec] = info["job_id"]
 
+    # Per-attempt run status/name, so job & cypress cells are coloured by whether
+    # the spec failed in that attempt. From the spec_runs sidecar.
+    spec_runs = {}
+    sr = error_kind_enforce.discover_spec_runs(args.csv)
+    if sr:
+        spec_runs = error_kind_enforce.load_spec_runs(sr)
+
     out_path = args.output or str(Path(args.csv).with_suffix(".xlsx"))
     sheet_name = args.sheet or Path(args.csv).stem
-    sheet = build_sheet(header, data, sheet_name, cause_jobs=cause_jobs)
+    sheet = build_sheet(header, data, sheet_name, cause_jobs=cause_jobs, spec_runs=spec_runs)
     xlsx.write_workbook(out_path, [sheet])
     sys.stderr.write(f"Wrote {len(data)} row(s) to {out_path}\n")
 

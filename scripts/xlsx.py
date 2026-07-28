@@ -29,6 +29,7 @@ STYLE_GREEN = 3         # green background
 STYLE_LINK = 4          # blue underlined (hyperlink), no fill
 STYLE_LINK_GREEN = 5    # hyperlink font on a green background
 STYLE_LINK_RED = 6      # hyperlink font on a red background
+STYLE_LINK_RED_BOLD = 7  # bold hyperlink font on a red background
 
 
 class Cell:
@@ -104,10 +105,11 @@ _ROOT_RELS = (
 _STYLES_XML = (
     '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\r\n'
     '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
-    '<fonts count="3">'
+    '<fonts count="4">'
     '<font><sz val="11"/><name val="Calibri"/></font>'
     '<font><b/><sz val="11"/><name val="Calibri"/></font>'
     '<font><u/><color rgb="FF0563C1"/><sz val="11"/><name val="Calibri"/></font>'
+    '<font><b/><u/><color rgb="FF0563C1"/><sz val="11"/><name val="Calibri"/></font>'
     "</fonts>"
     '<fills count="4">'
     '<fill><patternFill patternType="none"/></fill>'
@@ -117,7 +119,7 @@ _STYLES_XML = (
     "</fills>"
     '<borders count="1"><border/></borders>'
     '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>'
-    '<cellXfs count="7">'
+    '<cellXfs count="8">'
     '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>'
     '<xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/>'
     '<xf numFmtId="0" fontId="0" fillId="2" borderId="0" xfId="0" applyFill="1"/>'
@@ -125,6 +127,7 @@ _STYLES_XML = (
     '<xf numFmtId="0" fontId="2" fillId="0" borderId="0" xfId="0" applyFont="1"/>'
     '<xf numFmtId="0" fontId="2" fillId="3" borderId="0" xfId="0" applyFont="1" applyFill="1"/>'
     '<xf numFmtId="0" fontId="2" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/>'
+    '<xf numFmtId="0" fontId="3" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/>'
     "</cellXfs>"
     '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>'
     "</styleSheet>"

@@ -62,6 +62,25 @@ def discover_failures_raw(csv_path):
     return None
 
 
+def discover_spec_runs(csv_path):
+    """Find the spec_runs_<pid>.json sidecar paired with a CSV, or None."""
+    p = Path(csv_path)
+    pid = _pid_from_name(p.name)
+    if pid:
+        cand = p.parent / f"spec_runs_{pid}.json"
+        if cand.exists():
+            return cand
+    globbed = sorted(p.parent.glob("spec_runs_*.json"))
+    return globbed[0] if len(globbed) == 1 else None
+
+
+def load_spec_runs(path):
+    """Return {spec: [run dicts]} from the sidecar."""
+    with open(path) as fh:
+        data = json.load(fh)
+    return {spec: rec.get("runs", []) for spec, rec in data.items()}
+
+
 def load_error_kinds(failures_raw_path):
     """Return {spec_filename: {"error_kind":..., "first_error":...}}."""
     with open(failures_raw_path) as fh:

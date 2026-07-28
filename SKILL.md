@@ -8,7 +8,7 @@ description: >-
   clickable job links, then group failures by root cause and offer to open a
   GitLab issue for the dominant cluster. Use when asked to investigate, analyze,
   triage, or summarize CI / pipeline test failures, or to classify why specs failed.
-version: 1.9.2
+version: 2.0.0
 ---
 
 # GitLab Pipeline Failure Analysis
@@ -37,7 +37,8 @@ for prior runs, so isolating each run in its own subfolder silently breaks
 regression detection.
 
 A run leaves exactly **two Excel files** in the working directory —
-`failed_specs_<PID>.xlsx` and `failed_specs_unique_<PID>.xlsx`. The CSV and
+`failed_specs_unique_<PID>.xlsx` (the failed specs, classified) and
+`all_specs_<PID>.xlsx` (every spec that ran, with its job links). The CSV and
 JSON files the scripts produce along the way are intermediates and are removed
 in step 7. Let `PID` be the pipeline id.
 
@@ -52,21 +53,24 @@ in step 7. Let `PID` be the pipeline id.
    python3 "$SKILL_DIR/scripts/pipeline_failed_specs.py" <pipeline> \
      [-p <group/project>]
    ```
-   Defaults to writing `failed_specs_$PID.csv` and
-   `failed_specs_unique_$PID.csv` (override with `-o`/`-u` if needed).
-   `failed_specs_$PID.csv` has one row per failed spec per job/retry;
-   `failed_specs_unique_$PID.csv` is deduped with a fixed column order:
-   `Failed spec, Passed on retry, New failure, bug_likelihood_(AI), Note,
-   Locally reproducible, failure_cause, cypress_url, first_failed_job_url,
-   second_failed_job_url, third_failed_job_url` (the classification/cypress
-   columns start blank/`N/A` and are filled by later steps;
-   second/third_failed_job_url are populated only when the spec failed in a
-   2nd/3rd retry attempt). Specs marked `Passed on retry: yes (...)` are
-   FLAKY, not hard failures. Specs marked `Note: Unable to find outputs`
-   started (per a `[SPEC START]` marker) but the job never logged a matching
-   `[SPEC END]` — it likely crashed, timed out, or was OOM-killed mid-spec, so
-   pass/fail is unknown; call these out separately rather than folding them
-   into the failure-cause breakdown.
+   Fetches every cypress-run / cypress-priority job attempt (jobs retry once,
+   so max 2 attempts), parses each trace's `[SPEC START]`/`[SPEC END]` markers
+   for per-spec pass/fail, and writes three files (override with `-o`/`-u`):
+   - `all_specs_$PID.csv` — every spec that ran (passed or failed), with
+     `first_job_url, second_job_url` (its 1st/2nd attempt, chronological).
+   - `failed_specs_unique_$PID.csv` — the failed specs, fixed column order:
+     `Failed spec, Passed on retry, New failure, bug_likelihood_(AI), Note,
+     Locally reproducible, failure_cause, first_cypress_url, second_cypress_url,
+     first_job_url, second_job_url`. Job/cypress columns are the spec's 1st/2nd
+     **attempt** (all runs, not only failures — a spec can pass attempt 1 and
+     fail attempt 2). The classification columns start blank/`N/A`.
+   - `spec_runs_$PID.json` — sidecar with per-attempt status; export uses it to
+     colour cells (red = the spec failed in that attempt).
+
+   Specs marked `Passed on retry: yes (...)` are FLAKY. Specs marked
+   `Note: JOB CRASHED` started (per a `[SPEC START]` marker) but the job never
+   logged a matching `[SPEC END]` — it likely crashed/timed out/OOM'd mid-spec,
+   so pass/fail is unknown; call these out separately.
 
 3. **Flag newly-introduced failures (optional, only if a previous run exists).**
    Ask the script for the most recent prior unique CSV in the working folder:
@@ -189,20 +193,28 @@ in step 7. Let `PID` be the pipeline id.
 
 7. **Export the Excel deliverables and clean up intermediates.** Convert both
    CSVs to formatted workbooks (deleting the source CSVs as they go), then
-   remove the JSON working files — so the run leaves only the two `.xlsx`.
+   remove the JSON working files (including the sidecar) — so the run leaves
+   only the two `.xlsx`.
    ```bash
    python3 "$SKILL_DIR/scripts/export_xlsx.py" --csv "failed_specs_unique_$PID.csv" --remove-source
-   python3 "$SKILL_DIR/scripts/export_xlsx.py" --csv "failed_specs_$PID.csv" --remove-source
-   rm -f "failures_raw_$PID.json" "mapping_$PID.json"
+   python3 "$SKILL_DIR/scripts/export_xlsx.py" --csv "all_specs_$PID.csv" --remove-source
+   rm -f "failures_raw_$PID.json" "mapping_$PID.json" "spec_runs_$PID.json"
    ```
    The exporter (dependency-free — pure stdlib, runs on any OS) sorts rows
-   alphabetically by spec, makes the job-URL column a clickable hyperlink,
-   fills the cell **red** where `bug_likelihood_(AI)` is HIGH or `New failure`
-   is `yes`, and fills the **row green** where `Passed on retry` is `yes` (red
-   cells win over green). After this step the working directory holds exactly
-   `failed_specs_$PID.xlsx` and `failed_specs_unique_$PID.xlsx` (the latter is
-   the primary deliverable). The next run's step-3 comparison reads this
-   `.xlsx` as the previous run, so nothing else needs to be kept.
+   alphabetically by spec and renders each job/cypress link as its **job
+   number** (clickable). Cell colours:
+   - a job or cypress cell is **red** if the spec FAILED in that attempt;
+     the failure-cause (bug-signal) job cell is additionally **bold**;
+   - `Note: JOB CRASHED` cell is red; `bug_likelihood_(AI): HIGH` and
+     `New failure: yes` cells are red; a `Passed on retry: yes` row is green;
+   - in `all_specs`, each job cell shows `job# (job name)` and is **green if
+     the spec passed** / red if it failed — so you can find which job a passed
+     spec ran in.
+
+   After this step the working directory holds exactly
+   `failed_specs_unique_$PID.xlsx` (the primary deliverable) and
+   `all_specs_$PID.xlsx`. The next run's step-3 comparison reads the unique
+   `.xlsx` as the previous run.
 
 8. **Summarize.** Give the user a breakdown grouped by `failure_cause` with
    counts and the spec lists, and call out: **newly-introduced failures
@@ -250,31 +262,32 @@ usually there (e.g. `selectProtocol` with `willRejectEntering: true` asserts
 A completed run leaves exactly **two files** in the working directory (both
 suffixed with the pipeline id so runs for different pipelines coexist):
 
-- **`failed_specs_unique_$PID.xlsx`** — the primary deliverable: deduped,
-  sorted by spec, red cells for HIGH bug-likelihood / new failures, green rows
-  for flaky (passed-on-retry) specs. Columns:
+- **`failed_specs_unique_$PID.xlsx`** — the primary deliverable: failed specs,
+  sorted by spec. Columns:
   `Failed spec, Passed on retry, New failure, bug_likelihood_(AI), Note,
-  Locally reproducible, failure_cause, cypress_url, first_failed_job_url,
-  second_failed_job_url, third_failed_job_url`.
+  Locally reproducible, failure_cause, first_cypress_url, second_cypress_url,
+  first_job_url, second_job_url`.
   - `New failure` is `yes`/`no` vs the previous run or `N/A` if not compared;
     `bug_likelihood_(AI)` is HIGH (likely real app bug, re-run locally first) /
-    MEDIUM / LOW (likely Cypress glitch).
-  - `Locally reproducible` is an empty column for the user to fill in.
-  - `first/second/third_failed_job_url` are the spec's failed attempts (job
-    number shown as clickable text → the GitLab job). The one the
-    `failure_cause` came from (the bug-signal attempt) has a **red background**.
-  - `cypress_url` links to that same bug-signal job's Cypress Cloud run
-    (shown as its job number). Empty for crashed jobs with no recording.
-  - For **flaky (passed-on-retry)** specs, `cypress_url` and the red job cell
-    point at the spec's **first failed attempt**, and `failure_cause` is
-    enriched with that first-failure error (`flaky (passed on retry) — first
-    failure: <error>`) so the flaky behaviour is diagnosable. Flaky specs stay
-    LOW even if that first failure was a value/data mismatch.
-- **`failed_specs_$PID.xlsx`** — per-job/retry rows, same formatting engine.
+    MEDIUM / LOW (likely Cypress glitch). `Locally reproducible` is an empty
+    column for the user to fill in.
+  - `first/second_job_url` are the spec's 1st/2nd **attempts** (chronological,
+    all runs). A cell is **red** if the spec failed in that attempt; the
+    failure-cause (bug-signal) job is additionally **bold**. `first/second_cypress_url`
+    are the matching Cypress Cloud runs, coloured the same way. Link text is
+    the job number.
+  - `Note: JOB CRASHED` (red) = a `[SPEC START]` with no matching `[SPEC END]`.
+  - For **flaky (passed-on-retry)** specs, `failure_cause` is enriched with the
+    first-failure error (`flaky (passed on retry) — first failure: <error>`).
+    Flaky specs stay LOW even if that first failure was a value/data mismatch.
+- **`all_specs_$PID.xlsx`** — every spec that ran (passed and failed), sorted,
+  with `first_job_url, second_job_url` showing `job# (job name)`, green if the
+  spec passed in that attempt / red if it failed. Lets you find which job a
+  passed spec ran in.
 
-Intermediates (`failed_specs*.csv`, `failures_raw_$PID.json`,
-`mapping_$PID.json`) are produced during the run and removed in step 7. The
-next run's comparison reads the previous `.xlsx`, so nothing else is kept.
+Intermediates (`all_specs_$PID.csv`, `failed_specs_unique_$PID.csv`,
+`failures_raw_$PID.json`, `mapping_$PID.json`, `spec_runs_$PID.json`) are
+produced during the run and removed in step 7.
 
 - Optional: a GitLab issue.
 

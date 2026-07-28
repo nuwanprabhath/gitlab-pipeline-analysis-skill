@@ -1,20 +1,18 @@
 #!/usr/bin/env python3
 """
-Extract all failed Cypress specs from a GitLab CI pipeline.
+Map every Cypress spec in a GitLab CI pipeline to the job attempts it ran in.
 
-For each failed job in the pipeline (including retries), this script
-downloads the job trace, parses the `[SPEC START]`/`[SPEC END]` markers CI
-wraps around each spec, and emits one CSV row per failed spec. Specs that
-started but never got an `[SPEC END]` (job crashed/timed out/OOM-killed
-mid-spec) are emitted too, with Note = "Unable to find outputs".
+Fetches all cypress-run / cypress-priority job attempts (jobs retry once, so
+max 2 attempts), parses each trace's `[SPEC START]`/`[SPEC END]` markers for
+per-spec pass/fail, and writes:
+  - all_specs_<pid>.csv        every spec + its 1st/2nd job attempt
+  - failed_specs_unique_<pid>.csv  failed specs, classification columns blank
+  - spec_runs_<pid>.json       sidecar with per-attempt status (for colouring)
+A spec that started but never got an `[SPEC END]` (crash/timeout/OOM) is marked
+Note = "JOB CRASHED".
 
 Usage:
-  ./pipeline_failed_specs.py <pipeline_id_or_url> [-o OUTPUT.csv] [-p PROJECT]
-
-Examples:
-  ./pipeline_failed_specs.py 2586657275
-  ./pipeline_failed_specs.py https://gitlab.com/ternandsparrow/paratoo-fdcp/-/pipelines/2466892610
-  ./pipeline_failed_specs.py 2466892610 -o failures.csv
+  ./pipeline_failed_specs.py <pipeline_id_or_url> [-o ALL_SPECS.csv] [-u UNIQUE.csv] [-p PROJECT]
 
 Requires `glab` to be installed and authenticated.
 """
@@ -70,7 +68,19 @@ GITLAB_LINE_PREFIX_RE = re.compile(
 SPEC_EVENT_RE = re.compile(
     r"\[SPEC (START|END)\]\s+(\S+\.cy\.(?:js|ts))(?:[^\n]*?(✔ PASSED|✖ FAILED))?"
 )
-MISSING_OUTPUT_NOTE = "Unable to find outputs"
+# Cypress Cloud run URL, printed once near the top of a recorded run's trace.
+CYPRESS_RUN_URL_RE = re.compile(r"Run URL:\s*(https?://\S*?cypress\.io/\S+)")
+MISSING_OUTPUT_NOTE = "JOB CRASHED"
+
+
+def parse_cypress_run_url(log):
+    """Return the Cypress Cloud run URL for a job trace, or '' if not recorded."""
+    m = CYPRESS_RUN_URL_RE.search(ANSI_RE.sub("", log))
+    return m.group(1).rstrip("│ ") if m else ""
+
+
+def is_cypress_job(name):
+    return "cypress-run" in name or "cypress-priority" in name
 
 
 def glab(path):
@@ -240,219 +250,141 @@ def main():
     parser.add_argument("pipeline", help="pipeline id or GitLab pipeline URL")
     parser.add_argument(
         "-o", "--output", default=None,
-        help="output CSV path (default: failed_specs_<pipeline_id>.csv, so multiple "
-             "pipelines can be analyzed in the same folder without overwriting)",
+        help="all-specs CSV path (default: all_specs_<pipeline_id>.csv)",
     )
     parser.add_argument(
         "-u", "--unique-output", default=None,
-        help="unique-specs CSV path (default: failed_specs_unique_<pipeline_id>.csv)",
+        help="failed-specs CSV path (default: failed_specs_unique_<pipeline_id>.csv)",
     )
     parser.add_argument("-p", "--project", default=DEFAULT_PROJECT, help=f"GitLab project path (default: {DEFAULT_PROJECT})")
     args = parser.parse_args()
 
     pipeline_id = parse_pipeline_id(args.pipeline)
     if args.output is None:
-        args.output = f"failed_specs_{pipeline_id}.csv"
+        args.output = f"all_specs_{pipeline_id}.csv"
     if args.unique_output is None:
         args.unique_output = f"failed_specs_unique_{pipeline_id}.csv"
-
-    sys.stderr.write(f"Fetching all jobs for pipeline {pipeline_id}...\n")
-    all_jobs = fetch_all_jobs(args.project, pipeline_id)
-    failed_jobs = [j for j in all_jobs if j["status"] == "failed"]
-    sys.stderr.write(f"Found {len(failed_jobs)} failed job(s) out of {len(all_jobs)} total.\n")
-
-    # Group ALL jobs by name (sorted chronologically) to track retry attempts
-    jobs_by_name = defaultdict(list)
-    for job in sorted(all_jobs, key=lambda j: j["created_at"]):
-        jobs_by_name[job["name"]].append(job)
-
-    # Group job instances by name so we can emit a stable "Job" column per group
-    group_first_id = {}
-    for job in sorted(failed_jobs, key=lambda j: j["created_at"]):
-        group_first_id.setdefault(job["name"], job["id"])
-
-    rows = []
-    no_spec_jobs = []
-    missing_output_jobs = []
-    # Track which specs failed in which job instances: {job_id: [spec, ...]}.
-    # Specs whose output went missing are folded in here too, so the existing
-    # retry-detection / first-failed-job logic below picks them up for free.
-    failed_specs_by_job_id = {}
-    # Specs that had at least one job attempt with no summary-table entry
-    missing_output_specs = set()
-    # Exact repo-relative spec paths seen via [SPEC START]/[SPEC END] markers,
-    # keyed by basename — the ground truth for re-run path resolution.
-    known_spec_paths = {}
-
-    # Process newest-first so the CSV lists the latest retries at the top
-    for job in sorted(failed_jobs, key=lambda j: j["created_at"], reverse=True):
-        job_id = job["id"]
-        name = job["name"]
-        sys.stderr.write(f"  job {job_id} ({name})...\n")
-        trace = fetch_job_trace(args.project, job_id)
-        specs = parse_failed_specs(trace)
-        missing = [s for s in find_missing_output_specs(trace) if s not in specs]
-        failed_specs_by_job_id[job_id] = specs + missing
-        for basename, full_path in parse_spec_full_paths(trace).items():
-            known_spec_paths.setdefault(basename, full_path)
-        group_label = f"#{group_first_id[name]}: {name}"
-        retry_label = f"#{job_id}: {name}"
-        if not specs and not missing:
-            no_spec_jobs.append((job_id, name))
-            rows.append({
-                "Job": group_label,
-                "Related jobs": retry_label,
-                "Failed spec": "",
-                "Note": "",
-            })
-            continue
-        for spec in specs:
-            rows.append({
-                "Job": group_label,
-                "Related jobs": retry_label,
-                "Failed spec": spec,
-                "Note": "",
-            })
-        if missing:
-            missing_output_jobs.append((job_id, name, missing))
-            missing_output_specs.update(missing)
-        for spec in missing:
-            rows.append({
-                "Job": group_label,
-                "Related jobs": retry_label,
-                "Failed spec": spec,
-                "Note": MISSING_OUTPUT_NOTE,
-            })
-
-    with open(args.output, "w", newline="") as fh:
-        writer = csv.DictWriter(fh, fieldnames=["Job", "Related jobs", "Failed spec", "Note"])
-        writer.writeheader()
-        writer.writerows(rows)
-
-    sys.stderr.write(f"\nWrote {len(rows)} row(s) to {args.output}\n")
-    if no_spec_jobs:
-        sys.stderr.write(
-            f"{len(no_spec_jobs)} job(s) had no Cypress '(Run Finished)' summary "
-            "(likely non-Cypress failures, e.g. commitlint/setup/sonarcloud):\n"
-        )
-        for jid, name in no_spec_jobs:
-            sys.stderr.write(f"  #{jid} {name}\n")
-    if missing_output_jobs:
-        sys.stderr.write(
-            f"{len(missing_output_jobs)} job(s) started a spec that never reached "
-            "the Cypress summary table (crash/timeout/OOM) — outcome unknown:\n"
-        )
-        for jid, name, missing in missing_output_jobs:
-            sys.stderr.write(f"  #{jid} {name}: {', '.join(missing)}\n")
-
-    # Build a de-duplicated list of failed spec filenames, preserving discovery order
-    unique_specs = []
-    seen = set()
-    for row in rows:
-        name = row["Failed spec"]
-        if name and name not in seen:
-            seen.add(name)
-            unique_specs.append(name)
-
-    # Determine "Passed on retry" for each unique spec.
-    # For each spec, find which job name ran it, then check if a later attempt
-    # of that same job name either succeeded or no longer lists the spec as failed.
-    # Map each spec to the job name(s) that ran it
-    spec_to_job_names = defaultdict(set)
-    for job in failed_jobs:
-        for spec in failed_specs_by_job_id.get(job["id"], []):
-            spec_to_job_names[spec].add(job["name"])
-
-    def find_passed_on_retry(spec):
-        """Return (attempt_number, job_id) where the spec passed, or None."""
-        for job_name in spec_to_job_names.get(spec, []):
-            attempts = jobs_by_name[job_name]
-            # Find the first attempt where this spec failed
-            first_fail_idx = None
-            for i, attempt in enumerate(attempts):
-                if attempt["id"] in failed_specs_by_job_id and spec in failed_specs_by_job_id[attempt["id"]]:
-                    first_fail_idx = i
-                    break
-            if first_fail_idx is None:
-                continue
-            # Look at subsequent attempts
-            for i in range(first_fail_idx + 1, len(attempts)):
-                attempt = attempts[i]
-                if attempt["status"] == "success":
-                    return i + 1, attempt["id"]
-                if attempt["id"] in failed_specs_by_job_id:
-                    if spec not in failed_specs_by_job_id[attempt["id"]]:
-                        return i + 1, attempt["id"]
-        return None
-
-    passed_on_retry = {}
-    for spec in unique_specs:
-        result = find_passed_on_retry(spec)
-        if result is not None:
-            retry_num, job_id = result
-            passed_on_retry[spec] = f"yes ({retry_num}) (#{job_id})"
-        else:
-            passed_on_retry[spec] = "no"
-
-    def find_failed_job_ids(spec):
-        """Return the job_ids of every attempt where this spec failed, in
-        chronological order (earliest first) — one per attempt across the job
-        names that ran it (i.e. retries)."""
-        seen = []
-        for job_name in spec_to_job_names.get(spec, []):
-            for attempt in jobs_by_name[job_name]:  # already sorted by created_at
-                if attempt["id"] in failed_specs_by_job_id and spec in failed_specs_by_job_id[attempt["id"]]:
-                    seen.append((attempt["created_at"], attempt["id"]))
-        return [jid for _, jid in sorted(seen)]
+    # sidecar: per-spec run status/name/cypress, so export can colour cells and
+    # bold the failure-cause job. Written beside the unique CSV so export's
+    # auto-discovery finds it. Cleaned up with the other intermediates.
+    sidecar_path = str(Path(args.unique_output).with_name(f"spec_runs_{pipeline_id}.json"))
 
     def job_url(job_id):
         return f"{GITLAB_BASE_URL}/{args.project}/-/jobs/{job_id}"
 
-    failed_job_urls = {}  # spec -> [first, second, third] URLs (padded to 3)
-    for spec in unique_specs:
-        ids = find_failed_job_ids(spec)[:3]
-        failed_job_urls[spec] = [job_url(j) for j in ids] + [""] * (3 - len(ids))
+    sys.stderr.write(f"Fetching all jobs for pipeline {pipeline_id}...\n")
+    all_jobs = fetch_all_jobs(args.project, pipeline_id)
+    cypress_jobs = sorted(
+        (j for j in all_jobs if is_cypress_job(j["name"])),
+        key=lambda j: j["created_at"],
+    )
+    sys.stderr.write(f"Found {len(cypress_jobs)} cypress job attempt(s).\n")
 
-    resolved, unresolved = resolve_spec_paths(unique_specs, known_paths=known_spec_paths)
+    # spec (basename) -> chronological list of runs. Each run is one job attempt
+    # the spec appeared in (via [SPEC START]/[SPEC END]) with its outcome.
+    spec_runs = defaultdict(list)
+    known_spec_paths = {}
+    for job in cypress_jobs:
+        sys.stderr.write(f"  job {job['id']} ({job['name']})...\n")
+        trace = fetch_job_trace(args.project, job["id"])
+        order, status = parse_spec_events(trace)
+        cyurl = parse_cypress_run_url(trace)
+        for full in order:
+            base = os.path.basename(full)
+            known_spec_paths.setdefault(base, full)
+            spec_runs[base].append({
+                "job_id": job["id"],
+                "job_name": job["name"],
+                "status": status.get(full) or "MISSING",
+                "created_at": job["created_at"],
+                "job_url": job_url(job["id"]),
+                "cypress_url": cyurl,
+            })
+    for base in spec_runs:
+        spec_runs[base].sort(key=lambda r: r["created_at"])
 
-    # Columns filled in later by separate steps (each updates columns in place):
-    # compare_new_failures.py -> New failure; annotate_failure_cause.py ->
-    # failure_cause, bug_likelihood_(AI), cypress_url; export_xlsx -> presentation.
-    # Emitting all columns up-front fixes the final order. `Locally reproducible`
-    # is intentionally left blank for the user to fill in.
-    unique_rows = [
-        {
+    all_specs = sorted(spec_runs)
+
+    def is_fail(status):
+        return status in ("FAILED", "MISSING")
+
+    def passed_on_retry(runs):
+        """Return (attempt_number, passed_run) if the spec failed then later
+        passed, else None."""
+        for i, r in enumerate(runs):
+            if is_fail(r["status"]):
+                for j in range(i + 1, len(runs)):
+                    if runs[j]["status"] == "PASSED":
+                        return j + 1, runs[j]
+                break
+        return None
+
+    failed_specs = [s for s in all_specs if any(is_fail(r["status"]) for r in spec_runs[s])]
+
+    # --- sidecar (for export colouring) ---
+    with open(sidecar_path, "w") as fh:
+        json.dump({s: {"runs": spec_runs[s]} for s in all_specs}, fh, indent=1)
+
+    # --- all_specs CSV: every spec + its (up to 2) job links ---
+    all_rows = []
+    for spec in all_specs:
+        runs = spec_runs[spec]
+        all_rows.append({
+            "Spec": spec,
+            "first_job_url": runs[0]["job_url"] if runs else "",
+            "second_job_url": runs[1]["job_url"] if len(runs) > 1 else "",
+        })
+    with open(args.output, "w", newline="") as fh:
+        writer = csv.DictWriter(fh, fieldnames=["Spec", "first_job_url", "second_job_url"])
+        writer.writeheader()
+        writer.writerows(all_rows)
+    sys.stderr.write(f"Wrote {len(all_rows)} spec(s) to {args.output}\n")
+
+    # --- failed-specs unique CSV ---
+    # Later steps fill columns in place: compare_new_failures.py -> New failure;
+    # annotate_failure_cause.py -> failure_cause, bug_likelihood_(AI). Job/cypress
+    # URLs are chronological attempts (all runs, not only failures); export
+    # colours the failed ones red and bolds the failure-cause job.
+    unique_rows = []
+    for spec in failed_specs:
+        runs = spec_runs[spec]
+        por = passed_on_retry(runs)
+        note = MISSING_OUTPUT_NOTE if any(r["status"] == "MISSING" for r in runs) else ""
+        unique_rows.append({
             "Failed spec": spec,
-            "Passed on retry": passed_on_retry[spec],
+            "Passed on retry": f"yes ({por[0]}) (#{por[1]['job_id']})" if por else "no",
             "New failure": "N/A",
             "bug_likelihood_(AI)": "",
-            "Note": MISSING_OUTPUT_NOTE if spec in missing_output_specs else "",
+            "Note": note,
             "Locally reproducible": "",
             "failure_cause": "",
-            "cypress_url": "",
-            "first_failed_job_url": failed_job_urls[spec][0],
-            "second_failed_job_url": failed_job_urls[spec][1],
-            "third_failed_job_url": failed_job_urls[spec][2],
-        }
-        for spec in unique_specs
-    ]
+            "first_cypress_url": runs[0]["cypress_url"] if runs else "",
+            "second_cypress_url": runs[1]["cypress_url"] if len(runs) > 1 else "",
+            "first_job_url": runs[0]["job_url"] if runs else "",
+            "second_job_url": runs[1]["job_url"] if len(runs) > 1 else "",
+        })
     with open(args.unique_output, "w", newline="") as fh:
         writer = csv.DictWriter(
             fh,
             fieldnames=[
                 "Failed spec", "Passed on retry", "New failure", "bug_likelihood_(AI)",
-                "Note", "Locally reproducible", "failure_cause", "cypress_url",
-                "first_failed_job_url", "second_failed_job_url", "third_failed_job_url",
+                "Note", "Locally reproducible", "failure_cause",
+                "first_cypress_url", "second_cypress_url", "first_job_url", "second_job_url",
             ],
         )
         writer.writeheader()
         writer.writerows(unique_rows)
-    sys.stderr.write(f"Wrote {len(unique_rows)} unique spec(s) to {args.unique_output}\n")
+    sys.stderr.write(f"Wrote {len(unique_rows)} failed spec(s) to {args.unique_output}\n")
 
-    if not unique_specs:
+    crashed = [s for s in failed_specs if any(r["status"] == "MISSING" for r in spec_runs[s])]
+    if crashed:
+        sys.stderr.write(f"{len(crashed)} spec(s) with a crashed job (JOB CRASHED): {', '.join(crashed)}\n")
+
+    if not failed_specs:
         sys.stderr.write("\nNo failed Cypress specs to re-run.\n")
         return
 
+    resolved, unresolved = resolve_spec_paths(failed_specs, known_paths=known_spec_paths)
     cmd = build_cypress_command(resolved)
     sys.stderr.write(
         f"\nTo re-run the {len(resolved)} failed spec(s), from paratoo-webapp/:\n\n"

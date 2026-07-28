@@ -18,3 +18,6 @@ __pycache__/
 # Editor / OS
 .DS_Store
 *.swp
+all_specs_*.csv
+all_specs_*.xlsx
+spec_runs_*.json

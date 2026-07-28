@@ -87,27 +87,18 @@ def main():
         r[likelihood_idx] = likelihood
         out.append(r)
 
-    # Enrich from failures_raw: cypress_url (the relevant job's Cypress Cloud
-    # run link) and, for flaky/passed-on-retry specs, the first-failure error
-    # appended to failure_cause so the flaky behaviour is diagnosable. For a
-    # passed-on-retry spec the failures_raw record is its FIRST failed attempt,
-    # so both point at the first failure.
+    # For flaky/passed-on-retry specs, append the first-failure error to
+    # failure_cause so the flaky behaviour is diagnosable. For a passed-on-retry
+    # spec the failures_raw record is its FIRST failed attempt's error.
     fr = error_kind_enforce.discover_failures_raw(args.csv)
     if fr:
         info = error_kind_enforce.load_error_kinds(fr)
         hl = [h.strip().lower() for h in out[0]]
-        cy_idx = hl.index("cypress_url") if "cypress_url" in hl else None
         retry_i = hl.index("passed on retry") if "passed on retry" in hl else None
         for r in out[1:]:
             r += [""] * (len(out[0]) - len(r))
-            spec_info = info.get(r[spec_idx].strip()) or {}
-            if cy_idx is not None:
-                url = spec_info.get("cypress_run_url", "")
-                if url and not r[cy_idx].strip():
-                    r[cy_idx] = url
-            # append the first-failure error to a flaky spec's cause
             is_flaky = retry_i is not None and r[retry_i].strip().lower().startswith("yes")
-            err = spec_info.get("first_error", "")
+            err = (info.get(r[spec_idx].strip()) or {}).get("first_error", "")
             if is_flaky and err and err[:40] not in r[cause_idx]:
                 base = r[cause_idx].strip()
                 r[cause_idx] = f"{base} — first failure: {err[:200]}" if base else f"first failure: {err[:200]}"
