@@ -80,7 +80,9 @@ def parse_cypress_run_url(log):
 
 
 def is_cypress_job(name):
-    return "cypress-run" in name or "cypress-priority" in name
+    # cypress-run (main), cypress-priority (priority stage), cypress-smoke-test
+    # (setup stage). Not cypress-setup (env build; runs no specs).
+    return any(k in name for k in ("cypress-run", "cypress-priority", "cypress-smoke"))
 
 
 def glab(path):
@@ -295,6 +297,7 @@ def main():
             spec_runs[base].append({
                 "job_id": job["id"],
                 "job_name": job["name"],
+                "stage": job.get("stage", ""),
                 "status": status.get(full) or "MISSING",
                 "created_at": job["created_at"],
                 "job_url": job_url(job["id"]),

@@ -5,6 +5,18 @@ All notable changes to this skill are documented here. Format follows
 [Semantic Versioning](https://semver.org/) and is tracked in the `version`
 field of [`SKILL.md`](SKILL.md)'s frontmatter.
 
+## [2.0.2] - 2026-07-29
+
+### Added
+- Failed specs show which stage they came from in the failed-specs sheet:
+  `<spec> (priority)` for the cypress-priority partition and `<spec> (setup)`
+  for the setup stage (`cypress-smoke-test`); main `cypress-run` specs get no
+  suffix. Derived from the job stage/name at runtime (not a hardcoded list,
+  since specs move between partitions); display-only, so the CSV spec name
+  stays bare and classification/comparison still match. `pipeline_failed_specs.py`
+  now also captures `cypress-smoke-test` (setup stage) jobs and records each
+  run's `stage`.
+
 ## [2.0.1] - 2026-07-24
 
 ### Changed

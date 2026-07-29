@@ -200,6 +200,40 @@ class ExportXlsxTests(unittest.TestCase):
                     checked += 1
         self.assertEqual(checked, 6)  # a: 4 urls, b: 2 urls
 
+    def test_stage_suffix_priority_setup_and_none(self):
+        self.write([mk("a.cy.js", first=JOB + "1"), mk("b.cy.js", first=JOB + "2"),
+                    mk("c.cy.js", first=JOB + "3")])
+        sr = {
+            # priority (by stage), setup (by smoke-test job name), main run (none)
+            "a.cy.js": [{"job_id": "1", "job_name": "cypress-priority 1/6", "stage": "test-cypress-priority", "status": "FAILED"}],
+            "b.cy.js": [{"job_id": "2", "job_name": "cypress-smoke-test", "stage": "test-cypress-setup", "status": "FAILED"}],
+            "c.cy.js": [{"job_id": "3", "job_name": "cypress-run 3/8", "stage": "test-cypress-run", "status": "FAILED"}],
+        }
+        specs = [r[0] for r in xlsx.read_sheet(self.export(spec_runs=sr))[1:]]
+        self.assertIn("a.cy.js (priority)", specs)
+        self.assertIn("b.cy.js (setup)", specs)
+        self.assertIn("c.cy.js", specs)  # main run: no suffix
+
+    def test_stage_suffix_works_without_stage_field(self):
+        # older sidecars have only job_name -> still derive the marker from it
+        self.write([mk("a.cy.js", first=JOB + "1")])
+        sr = {"a.cy.js": [{"job_id": "1", "job_name": "cypress-priority 1/6", "status": "FAILED"}]}
+        specs = [r[0] for r in xlsx.read_sheet(self.export(spec_runs=sr))[1:]]
+        self.assertIn("a.cy.js (priority)", specs)
+
+    def test_priority_suffix_not_in_all_specs_sheet(self):
+        # all_specs already shows the job name in-cell, so no suffix there
+        header = ["Spec", "first_job_url", "second_job_url"]
+        with open(self.csv_path, "w", newline="") as fh:
+            w = csv.writer(fh)
+            w.writerow(header)
+            w.writerow(["a.cy.js", JOB + "100", ""])
+        out = self.csv_path.with_suffix(".xlsx")
+        h, data = export_xlsx.load_csv(self.csv_path)
+        sr = {"a.cy.js": [{"job_id": "100", "job_name": "cypress-priority 1/6", "status": "FAILED"}]}
+        xlsx.write_workbook(out, [export_xlsx.build_sheet(h, data, "s", spec_runs=sr)])
+        self.assertEqual(xlsx.read_sheet(out)[1][0], "a.cy.js")  # no suffix
+
     def test_note_job_crashed_is_red(self):
         self.write([mk("a.cy.js", note="JOB CRASHED", first=JOB + "100")])
         cells = parse_styles(self.export(spec_runs={"a.cy.js": runs(("100", "MISSING"))}))

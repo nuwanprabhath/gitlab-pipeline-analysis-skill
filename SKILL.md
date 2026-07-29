@@ -8,7 +8,7 @@ description: >-
   clickable job links, then group failures by root cause and offer to open a
   GitLab issue for the dominant cluster. Use when asked to investigate, analyze,
   triage, or summarize CI / pipeline test failures, or to classify why specs failed.
-version: 2.0.1
+version: 2.0.2
 ---
 
 # GitLab Pipeline Failure Analysis
@@ -263,7 +263,8 @@ A completed run leaves exactly **two files** in the working directory (both
 suffixed with the pipeline id so runs for different pipelines coexist):
 
 - **`failed_specs_unique_$PID.xlsx`** — the primary deliverable: failed specs,
-  sorted by spec. Columns:
+  sorted by spec (specs show `<spec> (priority)` or `<spec> (setup)`
+  when they ran in the priority or setup stage). Columns:
   `Failed spec, Passed on retry, New failure, bug_likelihood_(AI), Note,
   Locally reproducible, failure_cause, first_cypress_url, second_cypress_url,
   first_job_url, second_job_url`.

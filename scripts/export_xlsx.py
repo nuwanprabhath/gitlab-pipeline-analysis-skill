@@ -75,6 +75,19 @@ def _run_at(runs, idx):
     return runs[idx] if idx < len(runs) else None
 
 
+def _partition_marker(runs):
+    """Return ' (priority)' / ' (setup)' / '' from the spec's job stage or name
+    (derived at runtime, never hardcoded, since specs move between partitions).
+    Main `cypress-run` specs get no marker."""
+    def txt(r):
+        return f"{r.get('stage', '')} {r.get('job_name', '')}".lower()
+    if any("priority" in txt(r) for r in runs):
+        return " (priority)"
+    if any(("setup" in txt(r)) or ("smoke" in txt(r)) for r in runs):
+        return " (setup)"
+    return ""
+
+
 def build_sheet(header, data, sheet_name, cause_jobs=None, spec_runs=None):
     """Render a CSV to a Sheet.
 
@@ -116,6 +129,12 @@ def build_sheet(header, data, sheet_name, cause_jobs=None, spec_runs=None):
         spec = row[spec_idx].strip()
         runs = spec_runs.get(spec, [])
         cause_job = str(cause_jobs.get(spec) or "")
+        # Mark which stage a spec came from — (priority)/(setup) — derived from
+        # the job stage/name at runtime, not a hardcoded list. Display only, so
+        # the CSV spec name stays bare and classification/comparison still match.
+        marker = _partition_marker(runs)
+        if not is_all_specs and spec and marker:
+            row[spec_idx] = f"{spec}{marker}"
         row_green = retry_idx is not None and row[retry_idx].strip().lower().startswith("yes")
         sample_job_url = next(
             (row[j].strip() for j in sorted(job_col) if row[j].strip().startswith("http")), ""
