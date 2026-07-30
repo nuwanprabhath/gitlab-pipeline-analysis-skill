@@ -30,6 +30,7 @@ If no previous CSV is found/given, every row's "New failure" is set to N/A.
 """
 import argparse
 import csv
+import re
 import sys
 from pathlib import Path
 
@@ -69,6 +70,26 @@ def find_previous_unique_csv(current_path):
     return max(candidates, key=_creation_time)
 
 
+# Exported sheets decorate the spec name for display: a stage marker
+# `(priority)`/`(setup)` and/or a shard bracket `[run 3/8]`, `[priority 2/6]`,
+# `[setup]`. Those are presentation only — and the shard a spec lands in changes
+# between runs — so both sides of the comparison are matched on the bare spec
+# name. Without this, reading a previous run's .xlsx marks every spec "new".
+_SHARD_BRACKET_RE = re.compile(r"\s*\[(?:(?:run|priority)\s+\d+\s*/\s*\d+|setup)\]$")
+_STAGE_SUFFIX_RE = re.compile(r"\s*\((?:priority|setup)\)$")
+
+
+def normalize_spec(name):
+    """Strip display-only stage/shard decorations from a 'Failed spec' value."""
+    prev = None
+    out = name.strip()
+    while out != prev:
+        prev = out
+        out = _SHARD_BRACKET_RE.sub("", out)
+        out = _STAGE_SUFFIX_RE.sub("", out)
+    return out
+
+
 def _spec_index(header):
     lower = [h.strip().lower() for h in header]
     return lower.index("failed spec") if "failed spec" in lower else 0
@@ -92,7 +113,7 @@ def read_failed_specs(path):
         return set()
     idx = _spec_index(rows[0])
     return {
-        r[idx].strip()
+        normalize_spec(r[idx])
         for r in rows[1:]
         if idx < len(r) and r[idx].strip()
     }
@@ -114,19 +135,19 @@ def mark_new_failures(current_path, previous_specs, output_path=None):
     def verdict(spec):
         if previous_specs is None:
             return "N/A"
-        return "yes" if spec not in previous_specs else "no"
+        return "yes" if normalize_spec(spec) not in previous_specs else "no"
 
     if NEW_FAILURE_COLUMN in header:
         cidx = header.index(NEW_FAILURE_COLUMN)
         out_header = header
         out_rows = data
         for r in out_rows:
-            r[cidx] = verdict(r[sidx].strip())
+            r[cidx] = verdict(r[sidx])
     else:
         cidx = min(NEW_FAILURE_POSITION, len(header))
         out_header = header[:cidx] + [NEW_FAILURE_COLUMN] + header[cidx:]
         out_rows = [
-            r[:cidx] + [verdict(r[sidx].strip())] + r[cidx:] for r in data
+            r[:cidx] + [verdict(r[sidx])] + r[cidx:] for r in data
         ]
 
     dest = output_path or current_path

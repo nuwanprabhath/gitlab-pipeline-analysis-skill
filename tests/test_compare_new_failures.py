@@ -175,6 +175,65 @@ class ReadPreviousXlsxTests(unittest.TestCase):
         self.assertEqual(cnf.read_failed_specs(p), {"a.cy.js"})
 
 
+class NormalizeSpecTests(unittest.TestCase):
+    """Exported sheets decorate spec names for display; the comparison must
+    match on the bare name or reading a previous .xlsx marks everything new."""
+
+    def test_strips_shard_bracket(self):
+        for decorated in (
+            "a.cy.js [run 3/8]",
+            "a.cy.js [priority 2/6]",
+            "a.cy.js [setup]",
+        ):
+            self.assertEqual(cnf.normalize_spec(decorated), "a.cy.js", decorated)
+
+    def test_strips_stage_marker_and_bracket_together(self):
+        self.assertEqual(
+            cnf.normalize_spec("a.cy.js (priority) [priority 2/6]"), "a.cy.js"
+        )
+        self.assertEqual(cnf.normalize_spec("a.cy.js (setup) [setup]"), "a.cy.js")
+
+    def test_leaves_bare_and_unrelated_names_alone(self):
+        self.assertEqual(cnf.normalize_spec("a.cy.js"), "a.cy.js")
+        self.assertEqual(cnf.normalize_spec(" cover+floristics.cy.js "),
+                         "cover+floristics.cy.js")
+        # Not a stage/shard decoration — must survive untouched.
+        self.assertEqual(cnf.normalize_spec("a (copy).cy.js"), "a (copy).cy.js")
+        self.assertEqual(cnf.normalize_spec("a.cy.js [wip]"), "a.cy.js [wip]")
+
+    def test_decorated_previous_xlsx_is_not_all_new(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        prev = Path(tmp.name) / "failed_specs_unique_100.xlsx"
+        xlsx.write_workbook(prev, [xlsx.Sheet("s", [
+            [xlsx.Cell("Failed spec"), xlsx.Cell("Passed on retry")],
+            [xlsx.Cell("a.cy.js [run 6/8]"), xlsx.Cell("no")],
+            [xlsx.Cell("b.cy.js (priority) [priority 1/6]"), xlsx.Cell("no")],
+        ])])
+        self.assertEqual(cnf.read_failed_specs(prev), {"a.cy.js", "b.cy.js"})
+
+        cur = Path(tmp.name) / "failed_specs_unique_200.csv"
+        write_csv(cur, ["Failed spec", "Passed on retry"],
+                  [["a.cy.js", "no"], ["c.cy.js", "no"]])
+        cnf.mark_new_failures(cur, cnf.read_failed_specs(prev))
+        got = {r["Failed spec"]: r["New failure"] for r in read_csv(cur)}
+        # a.cy.js failed in both runs (shard differs) -> pre-existing, not new.
+        self.assertEqual(got, {"a.cy.js": "no", "c.cy.js": "yes"})
+
+    def test_shard_moves_between_runs_still_matches(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        prev = Path(tmp.name) / "failed_specs_unique_100.xlsx"
+        xlsx.write_workbook(prev, [xlsx.Sheet("s", [
+            [xlsx.Cell("Failed spec")],
+            [xlsx.Cell("a.cy.js [run 2/8]")],
+        ])])
+        cur = Path(tmp.name) / "failed_specs_unique_200.csv"
+        write_csv(cur, ["Failed spec"], [["a.cy.js [run 7/8]"]])
+        cnf.mark_new_failures(cur, cnf.read_failed_specs(prev))
+        self.assertEqual(read_csv(cur)[0]["New failure"], "no")
+
+
 class CliTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

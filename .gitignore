@@ -21,3 +21,7 @@ __pycache__/
 all_specs_*.csv
 all_specs_*.xlsx
 spec_runs_*.json
+
+# Local automation config (per-machine; never committed)
+automation/config.env
+nightly_*.log

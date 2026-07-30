@@ -5,6 +5,73 @@ All notable changes to this skill are documented here. Format follows
 [Semantic Versioning](https://semver.org/) and is tracked in the `version`
 field of [`SKILL.md`](SKILL.md)'s frontmatter.
 
+## [2.1.0] - 2026-07-30
+
+### Added
+- **Unattended nightly runs.** New `automation/` folder turns the daily manual
+  "analyze the nightly pipeline" routine into a cron job: `nightly_report.sh`
+  resolves the latest nightly pipeline, runs the skill headlessly through
+  `claude -p`, and leaves the two `.xlsx` deliverables in a fixed folder. The
+  run never offers a GitLab ticket and always compares against the most recent
+  previous report in that folder, so the `New failure` column stays populated.
+- `automation/find_nightly_pipeline.py` resolves "the latest nightly" three
+  ways, selected by `DETECTION_MODE`: `trigger_window` (newest pipeline started
+  by a given user inside an overnight hour window that may wrap midnight),
+  `ref` (exact ref or `dev/*`-style prefix), and `schedule_id` (a GitLab CI/CD
+  schedule). It refuses a match older than `MAX_AGE_HOURS` (default 24), so a
+  night the pipeline didn't run fails loudly instead of re-reporting a stale
+  pipeline.
+- **Desktop notifications for unattended runs** (`NOTIFY`, on by default): a
+  start notification with the pipeline number and the date/time it began, and a
+  finish notification with the unique failure count, HIGH count, new-failure
+  count and elapsed minutes; errors notify at critical urgency. The runner
+  exports `DBUS_SESSION_BUS_ADDRESS` and `DISPLAY` itself, because cron has
+  neither and `notify-send` fails silently without them. Missing `notify-send`
+  (or a headless box) degrades to no notifications rather than failing the run.
+  New `automation/summarize_report.py` produces the one-line count summary from
+  the exported workbook.
+- `automation/config.example.env` — per-machine settings (project, output
+  folder, detection mode, log retention). Copy to `config.env`, which is
+  gitignored so `git pull` never clobbers local settings.
+- [`AUTOMATION_INSTALL_PROMPT.md`](AUTOMATION_INSTALL_PROMPT.md) — a
+  copy-pasteable Claude Code prompt that asks for the output folder, frequency
+  (default weekdays 9:00 AM), detection method and project, writes `config.env`,
+  smoke-tests a real run, and installs the crontab entry without clobbering
+  existing entries.
+
+### Fixed
+- **`New failure` marked every spec `yes` when the previous run was read from a
+  `.xlsx`.** The shard/stage decorations added in 2.0.2 (`<spec> [run 3/8]`,
+  `<spec> (priority) [priority 2/6]`) are written into the exported sheet, but
+  `compare_new_failures.py` matched raw strings — so a bare current spec name
+  never matched its decorated counterpart in the previous run's workbook, and
+  the regression column flagged the entire sheet as newly introduced. Both
+  sides are now normalized to the bare spec name, which also makes the
+  comparison immune to a spec moving between parallel shards from one run to
+  the next. Affects anyone comparing two runs since 2.0.2 — the day-to-day
+  workflow and, especially, the new unattended cron runs.
+
+### Security
+- The unattended run uses an explicit `--allowedTools` allowlist (reads, the
+  skill's own Python scripts, `glab api`) instead of `--permission-mode
+  bypassPermissions`. `glab issue`, `glab mr`, `glab repo` and `rm` are
+  explicitly denied, so a cron run cannot open a ticket or delete files; the
+  wrapper script cleans up the intermediates itself.
+
+### Other
+- Idempotency: the runner skips a pipeline whose `failed_specs_unique_<pid>.xlsx`
+  already exists (`SKIP_IF_ALREADY_ANALYZED`), so a duplicate cron entry or a
+  manual retry doesn't redo work.
+- Fixed the runner appending rather than prepending its PATH fallbacks, so an
+  explicit `PATH` from the caller is no longer overridden.
+- Test suite grows from 121 to 172 cases, all still stdlib-only and offline:
+  spec-name normalization (5), nightly-pipeline detection (20, with `glab`
+  stubbed — window wrapping midnight, all three detection modes, pagination,
+  scan budget, the staleness guard), the notification summary line (11), and an
+  end-to-end run of `nightly_report.sh` (15) with `claude`/`glab`/`notify-send`
+  stubbed, covering notification content, intermediate cleanup, the permission
+  allowlist, and every failure exit.
+
 ## [2.0.2] - 2026-07-29
 
 ### Added

@@ -61,6 +61,50 @@ existing checkout and pulls instead of re-cloning — see
 [`INSTALL_PROMPT.md`](INSTALL_PROMPT.md) for a copy-pasteable version that
 works for both first install and updates.
 
+## Unattended nightly runs (cron)
+
+If you analyze the nightly pipeline every morning anyway, `automation/` turns
+that into a cron job: it resolves the latest nightly pipeline, runs the skill
+headlessly via `claude -p`, and leaves the two `.xlsx` files in a fixed folder.
+No ticket is offered, and the previous run is compared automatically.
+
+Easiest setup: paste [`AUTOMATION_INSTALL_PROMPT.md`](AUTOMATION_INSTALL_PROMPT.md)
+into Claude Code. It asks for the output folder, the frequency (default:
+weekdays 9:00 AM), the nightly-detection method, and the project — then writes
+the config, smoke-tests a real run, and installs the crontab entry.
+
+Manual setup:
+
+```bash
+cd ~/.claude/skills/gitlab-pipeline-analysis/automation
+cp config.example.env config.env    # edit PROJECT, OUT_DIR, detection mode
+chmod +x nightly_report.sh
+./nightly_report.sh                 # smoke test
+crontab -e                          # 0 9 * * 1-5 /path/to/nightly_report.sh
+```
+
+**Desktop notifications** (`NOTIFY="yes"`, needs `notify-send` —
+`sudo apt install libnotify-bin`): one when the analysis starts (pipeline
+number, date and time) and one when it finishes (unique failure count, HIGH
+count, new-failure count, elapsed minutes). Errors notify at critical urgency.
+The runner sets `DBUS_SESSION_BUS_ADDRESS`/`DISPLAY` itself, since cron has
+neither and `notify-send` would otherwise do nothing silently. If `notify-send`
+is missing entirely, notifications are skipped and the run still completes.
+
+Three ways to identify "the nightly pipeline" (`DETECTION_MODE` in
+`config.env`): `trigger_window` (newest pipeline by a given user inside an
+overnight hour window — the default), `ref` (newest pipeline on `dev/*` or
+similar), or `schedule_id` (newest pipeline from a GitLab CI/CD schedule). The
+runner refuses to report on a match older than `MAX_AGE_HOURS`, so a night the
+pipeline didn't run surfaces as an error instead of a stale re-report.
+
+`config.env` is gitignored, so `git pull` never clobbers your settings.
+
+**Permissions:** the run uses an explicit `--allowedTools` allowlist (reads,
+the skill's own Python scripts, `glab api`) rather than `bypassPermissions`.
+`glab issue`/`glab mr` and `rm` are explicitly denied, so an unattended run
+cannot open a ticket or delete anything — the wrapper does its own cleanup.
+
 ## Usage (standalone scripts)
 
 From any directory (CSVs are written to the current directory):
@@ -152,7 +196,10 @@ python3 -m unittest discover -s tests -v
 ```
 
 Tests use synthetic GitLab CI trace text (see `tests/fixtures.py`), not live
-`glab` calls, so they run offline and fast. When changing parsing logic in
+`glab` calls, so they run offline and fast. The `automation/` layer is covered
+the same way — `tests/test_nightly_report_sh.py` runs the whole unattended flow
+with `claude`, `glab` and `notify-send` replaced by shell stubs, so the cron
+path is exercised end to end without network access or a real analysis run. When changing parsing logic in
 `pipeline_failed_specs.py` or `extract_failures.py`, add a fixture-based case
 rather than only testing against a live pipeline — that's what keeps
 regressions like the OOM-crash detection fix (see `CHANGELOG.md`) from
