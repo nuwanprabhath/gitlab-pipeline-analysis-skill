@@ -1,4 +1,5 @@
 import csv
+import re
 import subprocess
 import sys
 import tempfile
@@ -61,7 +62,10 @@ def parse_styles(xlsx_path):
     out = {}
     for cells in rows[1:]:
         spec = cells.get(0, ("", None))[0]
-        out[spec] = {header[i]: cells.get(i, ("", None)) for i in range(len(header))}
+        # Key by the bare spec name — strip any ` (priority)`/` [run 3/8]`
+        # display decoration so callers can look up by the plain filename.
+        key = re.sub(r"\s+[\(\[].*$", "", spec)
+        out[key] = {header[i]: cells.get(i, ("", None)) for i in range(len(header))}
     return out
 
 
@@ -210,16 +214,28 @@ class ExportXlsxTests(unittest.TestCase):
             "c.cy.js": [{"job_id": "3", "job_name": "cypress-run 3/8", "stage": "test-cypress-run", "status": "FAILED"}],
         }
         specs = [r[0] for r in xlsx.read_sheet(self.export(spec_runs=sr))[1:]]
-        self.assertIn("a.cy.js (priority)", specs)
-        self.assertIn("b.cy.js (setup)", specs)
-        self.assertIn("c.cy.js", specs)  # main run: no suffix
+        # word marker AND the parallel shard bracket (kept together)
+        self.assertIn("a.cy.js (priority) [priority 1/6]", specs)
+        self.assertIn("b.cy.js (setup) [setup]", specs)  # smoke-test has no shard index
+        self.assertIn("c.cy.js [run 3/8]", specs)  # main run: shard only, no word marker
 
     def test_stage_suffix_works_without_stage_field(self):
         # older sidecars have only job_name -> still derive the marker from it
         self.write([mk("a.cy.js", first=JOB + "1")])
         sr = {"a.cy.js": [{"job_id": "1", "job_name": "cypress-priority 1/6", "status": "FAILED"}]}
         specs = [r[0] for r in xlsx.read_sheet(self.export(spec_runs=sr))[1:]]
-        self.assertIn("a.cy.js (priority)", specs)
+        self.assertIn("a.cy.js (priority) [priority 1/6]", specs)
+
+    def test_shard_bracket_shows_partition_and_index(self):
+        self.write([mk("a.cy.js", first=JOB + "1"), mk("b.cy.js", first=JOB + "2")])
+        sr = {
+            "a.cy.js": [{"job_id": "1", "job_name": "cypress-run 3/8", "stage": "test-cypress-run", "status": "FAILED"}],
+            # index survives even when only the older job_name field is present
+            "b.cy.js": [{"job_id": "2", "job_name": "cypress-priority 2/6", "status": "FAILED"}],
+        }
+        specs = [r[0] for r in xlsx.read_sheet(self.export(spec_runs=sr))[1:]]
+        self.assertIn("a.cy.js [run 3/8]", specs)
+        self.assertIn("b.cy.js (priority) [priority 2/6]", specs)
 
     def test_priority_suffix_not_in_all_specs_sheet(self):
         # all_specs already shows the job name in-cell, so no suffix there

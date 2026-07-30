@@ -263,8 +263,9 @@ A completed run leaves exactly **two files** in the working directory (both
 suffixed with the pipeline id so runs for different pipelines coexist):
 
 - **`failed_specs_unique_$PID.xlsx`** — the primary deliverable: failed specs,
-  sorted by spec (specs show `<spec> (priority)` or `<spec> (setup)`
-  when they ran in the priority or setup stage). Columns:
+  sorted by spec (specs show `<spec> (priority)` or `<spec> (setup)` when they
+  ran in the priority or setup stage, followed by the parallel shard bracket
+  `[run 3/8]` / `[priority 2/6]` / `[setup]`). Columns:
   `Failed spec, Passed on retry, New failure, bug_likelihood_(AI), Note,
   Locally reproducible, failure_cause, first_cypress_url, second_cypress_url,
   first_job_url, second_job_url`.

@@ -88,6 +88,29 @@ def _partition_marker(runs):
     return ""
 
 
+# partition kind -> substrings that identify it in a job stage/name, in the same
+# precedence order as _partition_marker (priority, then setup, then the main run).
+_PARTITION_KINDS = (
+    ("priority", ("priority",)),
+    ("setup", ("setup", "smoke")),
+    ("run", ("run",)),
+)
+
+
+def _shard_marker(runs):
+    """Return ' [run 3/8]' / ' [priority 2/6]' / ' [setup]' — which parallel
+    shard the spec ran in, taken from the GitLab job name (e.g. `cypress-run
+    3/8`) at runtime. '' when the partition can't be determined. Jobs without a
+    parallel index (e.g. `cypress-smoke-test`) get just the kind: ' [setup]'."""
+    for kind, keys in _PARTITION_KINDS:
+        for r in runs:
+            hay = f"{r.get('stage', '')} {r.get('job_name', '')}".lower()
+            if any(k in hay for k in keys):
+                m = re.search(r"\d+\s*/\s*\d+", r.get("job_name", ""))
+                return f" [{kind} {m.group(0)}]" if m else f" [{kind}]"
+    return ""
+
+
 def build_sheet(header, data, sheet_name, cause_jobs=None, spec_runs=None):
     """Render a CSV to a Sheet.
 
@@ -129,10 +152,11 @@ def build_sheet(header, data, sheet_name, cause_jobs=None, spec_runs=None):
         spec = row[spec_idx].strip()
         runs = spec_runs.get(spec, [])
         cause_job = str(cause_jobs.get(spec) or "")
-        # Mark which stage a spec came from — (priority)/(setup) — derived from
-        # the job stage/name at runtime, not a hardcoded list. Display only, so
-        # the CSV spec name stays bare and classification/comparison still match.
-        marker = _partition_marker(runs)
+        # Mark which stage/shard a spec came from — e.g. ` (priority) [priority
+        # 2/6]` — derived from the job stage/name at runtime, not a hardcoded
+        # list. Display only, so the CSV spec name stays bare and
+        # classification/comparison still match.
+        marker = _partition_marker(runs) + _shard_marker(runs)
         if not is_all_specs and spec and marker:
             row[spec_idx] = f"{spec}{marker}"
         row_green = retry_idx is not None and row[retry_idx].strip().lower().startswith("yes")

@@ -8,6 +8,11 @@ field of [`SKILL.md`](SKILL.md)'s frontmatter.
 ## [2.0.2] - 2026-07-29
 
 ### Added
+- Failed specs now also show which parallel shard they ran in, as a bracket
+  after any stage marker: `<spec> [run 3/8]`, `<spec> (priority) [priority 2/6]`,
+  `<spec> (setup) [setup]` (jobs without a parallel index, e.g.
+  `cypress-smoke-test`, just get `[setup]`). Taken from the GitLab job name at
+  runtime; display-only, so the CSV spec name stays bare.
 - Failed specs show which stage they came from in the failed-specs sheet:
   `<spec> (priority)` for the cypress-priority partition and `<spec> (setup)`
   for the setup stage (`cypress-smoke-test`); main `cypress-run` specs get no
