@@ -5,6 +5,23 @@ All notable changes to this skill are documented here. Format follows
 [Semantic Versioning](https://semver.org/) and is tracked in the `version`
 field of [`SKILL.md`](SKILL.md)'s frontmatter.
 
+## [2.1.1] - 2026-07-30
+
+### Fixed
+- **`INSTALL_PROMPT.md` stalled when the installed checkout had uncommitted
+  edits.** The install directory is a git checkout, so editing the installed
+  copy in place leaves it permanently dirty; because updates touch `SKILL.md`
+  and `CHANGELOG.md` too, `git pull` risked a conflict and the prompt stopped to
+  ask what to do. New step 2a resolves it without interaction: stash (nothing is
+  lost), pull, and then *assess* the stash rather than popping it — replaying a
+  stale snapshot onto the updated tree is what produced the conflict in the
+  first place. The install report now states whether the stashed content was
+  redundant (with the `git stash drop` command) or possibly unique (preserved,
+  with a pointer to move it into the development repo instead).
+- `INSTALL_PROMPT.md` now also marks `automation/` scripts executable on
+  install, and confirms the working tree is clean so the next update is a plain
+  fast-forward.
+
 ## [2.1.0] - 2026-07-30
 
 ### Added
