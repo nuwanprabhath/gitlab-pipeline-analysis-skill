@@ -15,6 +15,46 @@ RUN_B = "test/cypress/integration/run/b.cy.js"
 PRIORITY_C = "test/cypress/integration/priority/c.cy.js"
 
 
+class IsCypressJobTests(unittest.TestCase):
+    """Which jobs get their trace parsed for specs.
+
+    Regression: the predicate was an allowlist of known job names and excluded
+    `cypress-setup` on the assumption that it "runs no specs". It does — in
+    pipeline 2717594939 it ran five, including a FAILED `1_refresh-data.cy.js`,
+    which was therefore missing from the report entirely. The rule is now
+    structural (any cypress job), so a spec can never be dropped because a new
+    job name has not been added to a list.
+    """
+
+    def test_includes_every_cypress_job(self):
+        for name in (
+            "cypress-run",
+            "cypress-run 3/8",
+            "cypress-priority",
+            "cypress-priority 2/6",
+            "cypress-smoke-test",
+            "cypress-setup",  # the regression
+        ):
+            self.assertTrue(pfs.is_cypress_job(name), name)
+
+    def test_excludes_non_cypress_jobs(self):
+        for name in (
+            "commitlint", "core-build-lint", "sonarcloud-check", "webapp-unit-test",
+            "aggregate-coverage", "deploy-test-stack", "notify-slack",
+            "create-db-snapshots", "secret_detection", "semgrep-sast",
+        ):
+            self.assertFalse(pfs.is_cypress_job(name), name)
+
+    def test_matches_case_insensitively(self):
+        self.assertTrue(pfs.is_cypress_job("Cypress-Setup"))
+
+    def test_unknown_future_cypress_job_is_included(self):
+        """Over-matching is safe: a cypress job with no [SPEC START] markers
+        parses to nothing, whereas under-matching silently loses failures."""
+        self.assertTrue(pfs.is_cypress_job("cypress-something-new"))
+        self.assertEqual(pfs.parse_spec_events("build log\nno markers\n"), ([], {}))
+
+
 class ParsePipelineIdTests(unittest.TestCase):
     def test_numeric_id(self):
         self.assertEqual(pfs.parse_pipeline_id("2640757838"), "2640757838")

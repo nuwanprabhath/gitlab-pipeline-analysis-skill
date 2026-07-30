@@ -1,3 +1,4 @@
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -8,6 +9,64 @@ sys.path.insert(0, str(SCRIPTS_DIR))
 import extract_failures as ef  # noqa: E402
 
 from fixtures import gitlab_line, build_log  # noqa: E402
+
+
+class JobFilterTests(unittest.TestCase):
+    """Classification must consider exactly the jobs the sheet was built from.
+
+    Regression: this module kept its own narrower list (`cypress-run` /
+    `cypress-priority` only). Any spec from a job the two lists disagreed on
+    reached the sheet but never got a failure_cause — it showed as
+    UNCLASSIFIED. Both now share one predicate so they cannot drift again.
+    """
+
+    def test_shares_the_predicate_with_pipeline_failed_specs(self):
+        import pipeline_failed_specs as pfs
+
+        self.assertIs(ef.is_cypress_job, pfs.is_cypress_job)
+
+    def test_covers_the_jobs_that_actually_run_specs(self):
+        for name in ("cypress-run 3/8", "cypress-priority", "cypress-smoke-test",
+                     "cypress-setup"):
+            self.assertTrue(ef.is_cypress_job(name), name)
+
+    def test_cypress_job_attempts_selects_via_the_shared_predicate(self):
+        """Behavioural, not just an identity check: importing the predicate but
+        still filtering with an inline list at the call site would leave the
+        bug in place, so exercise the function itself."""
+        jobs = [
+            {"name": "cypress-run 1/8", "created_at": "2026-07-30T01:00:00Z"},
+            {"name": "cypress-priority", "created_at": "2026-07-30T01:00:00Z"},
+            {"name": "cypress-smoke-test", "created_at": "2026-07-30T01:00:00Z"},
+            {"name": "cypress-setup", "created_at": "2026-07-30T01:00:00Z"},
+            {"name": "commitlint", "created_at": "2026-07-30T01:00:00Z"},
+            {"name": "sonarcloud-check", "created_at": "2026-07-30T01:00:00Z"},
+        ]
+        original = ef.glab
+        ef.glab = lambda path: json.dumps(jobs)
+        try:
+            got = ef.cypress_job_attempts("group/proj", "1")
+        finally:
+            ef.glab = original
+
+        self.assertEqual(
+            set(got),
+            {"cypress-run 1/8", "cypress-priority", "cypress-smoke-test",
+             "cypress-setup"},
+        )
+
+    def test_cypress_job_attempts_keeps_retries_in_chronological_order(self):
+        jobs = [
+            {"name": "cypress-setup", "id": 2, "created_at": "2026-07-30T02:00:00Z"},
+            {"name": "cypress-setup", "id": 1, "created_at": "2026-07-30T01:00:00Z"},
+        ]
+        original = ef.glab
+        ef.glab = lambda path: json.dumps(jobs)
+        try:
+            got = ef.cypress_job_attempts("group/proj", "1")
+        finally:
+            ef.glab = original
+        self.assertEqual([j["id"] for j in got["cypress-setup"]], [1, 2])
 
 
 class ParsePipelineIdTests(unittest.TestCase):

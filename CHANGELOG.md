@@ -5,6 +5,25 @@ All notable changes to this skill are documented here. Format follows
 [Semantic Versioning](https://semver.org/) and is tracked in the `version`
 field of [`SKILL.md`](SKILL.md)'s frontmatter.
 
+## [2.1.3] - 2026-07-30
+
+### Fixed
+- **Failed specs from `cypress-setup` were missing from the report entirely.**
+  `is_cypress_job()` was an allowlist of known job names that deliberately
+  excluded `cypress-setup`, commented as "env build; runs no specs" — but it
+  does run specs. In pipeline 2717594939 it ran five, including a FAILED
+  `1_refresh-data.cy.js` whose error is an `app-error` BUG-SIGNAL, so the single
+  highest-priority failure of that run was silently absent. Job selection is now
+  structural — any job whose name contains `cypress` — so a spec can never again
+  be dropped because CI grew a job name nobody added to a list. Over-matching is
+  safe: a cypress job with no `[SPEC START]` markers contributes nothing.
+- **`extract_failures.py` kept a second, narrower copy of the job filter**
+  (`cypress-run` / `cypress-priority` only, missing even `cypress-smoke` from
+  2.0.2). Specs from any job the two filters disagreed on reached the sheet but
+  were never classified, showing as `UNCLASSIFIED`. Both scripts now share one
+  predicate, and the shared use is covered behaviourally so they cannot drift
+  apart again.
+
 ## [2.1.2] - 2026-07-30
 
 ### Fixed

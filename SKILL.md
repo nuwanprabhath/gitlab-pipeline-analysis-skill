@@ -8,7 +8,7 @@ description: >-
   clickable job links, then group failures by root cause and offer to open a
   GitLab issue for the dominant cluster. Use when asked to investigate, analyze,
   triage, or summarize CI / pipeline test failures, or to classify why specs failed.
-version: 2.1.2
+version: 2.1.3
 ---
 
 # GitLab Pipeline Failure Analysis
@@ -295,7 +295,9 @@ produced during the run and removed in step 7.
 
 ## Notes
 
-- Only cypress-run / cypress-priority jobs are parsed for specs; non-cypress job
+- Every job whose name contains `cypress` is parsed for specs (cypress-run,
+  cypress-priority, cypress-setup, cypress-smoke-test — a cypress job with no
+  `[SPEC START]` markers simply contributes nothing); non-cypress job
   failures (commitlint, sonarcloud, setup) appear in the per-job sheet
   (`failed_specs_$PID.xlsx`) with an empty spec — mention them but they don't
   get a `failure_cause`.

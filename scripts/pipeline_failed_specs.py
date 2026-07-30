@@ -80,9 +80,19 @@ def parse_cypress_run_url(log):
 
 
 def is_cypress_job(name):
-    # cypress-run (main), cypress-priority (priority stage), cypress-smoke-test
-    # (setup stage). Not cypress-setup (env build; runs no specs).
-    return any(k in name for k in ("cypress-run", "cypress-priority", "cypress-smoke"))
+    """True for any job that may run Cypress specs.
+
+    Deliberately structural rather than an allowlist of known job names
+    (`cypress-run`, `cypress-priority`, `cypress-smoke-test`, `cypress-setup`,
+    …). An allowlist has to be extended every time CI grows a job, and until
+    someone notices, that job's specs are missing from the report with no
+    warning — `cypress-setup` was excluded on the incorrect assumption that it
+    only builds the environment, silently dropping the specs it does run.
+
+    Over-matching is cheap and safe: a job whose trace has no
+    `[SPEC START]` markers contributes nothing. Under-matching loses failures.
+    """
+    return "cypress" in name.lower()
 
 
 def glab(path):

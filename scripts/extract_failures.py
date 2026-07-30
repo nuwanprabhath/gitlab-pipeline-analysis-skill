@@ -39,6 +39,10 @@ import subprocess
 import sys
 import urllib.parse
 from collections import defaultdict, OrderedDict
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from pipeline_failed_specs import is_cypress_job  # noqa: E402
 
 DEFAULT_PROJECT = "ternandsparrow/paratoo-fdcp"
 
@@ -146,14 +150,20 @@ KIND_RANK = {"value-mismatch": 3, "app-error": 3, "element-timeout": 1, "other":
 
 
 def cypress_job_attempts(project, pipeline_id):
-    """Return {job_name: [attempts sorted oldest→newest]} for every
-    cypress-run / cypress-priority job (all retries included)."""
+    """Return {job_name: [attempts sorted oldest→newest]} for every Cypress job
+    (all retries included).
+
+    Uses the same predicate as pipeline_failed_specs so classification always
+    covers exactly the jobs the sheet was built from; when the two filters
+    disagreed, the extra specs reached the sheet but never got a
+    failure_cause and showed up as UNCLASSIFIED.
+    """
     enc = urllib.parse.quote(project, safe="")
     path = f"projects/{enc}/pipelines/{pipeline_id}/jobs?per_page=100&include_retried=true"
     jobs = json.loads(glab(path))
     by_name = defaultdict(list)
     for j in jobs:
-        if "cypress-run" in j["name"] or "cypress-priority" in j["name"]:
+        if is_cypress_job(j["name"]):
             by_name[j["name"]].append(j)
     for name in by_name:
         by_name[name].sort(key=lambda x: x["created_at"])
