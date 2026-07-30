@@ -14,8 +14,9 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # cron gives a minimal PATH; append the usual user-install locations as
 # fallbacks. Appended, not prepended, so an explicit PATH from the caller still
-# takes precedence.
-export PATH="$PATH:$HOME/.local/bin:$HOME/bin:/usr/local/bin:/usr/bin:/bin"
+# takes precedence. /opt/homebrew/* matters on Apple Silicon (Homebrew's prefix
+# there, where glab lands) and /snap/bin on Ubuntu.
+export PATH="$PATH:$HOME/.local/bin:$HOME/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/snap/bin"
 
 CONFIG="${NIGHTLY_REPORT_CONFIG:-$HERE/config.env}"
 if [ ! -f "$CONFIG" ]; then
@@ -68,9 +69,29 @@ fail() {
   exit 1
 }
 
-command -v claude >/dev/null 2>&1 || fail "claude CLI not on PATH"
-command -v glab   >/dev/null 2>&1 || fail "glab not on PATH"
-command -v python3 >/dev/null 2>&1 || fail "python3 not on PATH"
+# Escape hatch for tools installed somewhere the fallbacks don't cover. Each
+# override's directory is prepended to PATH rather than just being called
+# directly, so child processes resolve it too (find_nightly_pipeline.py shells
+# out to glab, and the Claude run shells out to glab and python3).
+for _override in "${CLAUDE_BIN:-}" "${GLAB_BIN:-}" "${PYTHON_BIN:-}"; do
+  [ -n "$_override" ] || continue
+  _dir="$(dirname "$_override")"
+  case ":$PATH:" in
+    *":$_dir:"*) ;;
+    *) PATH="$_dir:$PATH" ;;
+  esac
+done
+export PATH
+
+require() {
+  # require <command> <config-key> [extra hint]
+  command -v "$1" >/dev/null 2>&1 && return 0
+  fail "$1 not found. Searched PATH=$PATH${3:+ ($3)}. If it is installed elsewhere, set $2=/full/path/to/$1 in $CONFIG"
+}
+
+require claude CLAUDE_BIN
+require glab GLAB_BIN "Homebrew on Apple Silicon installs to /opt/homebrew/bin"
+require python3 PYTHON_BIN
 glab auth status >/dev/null 2>&1 || fail "glab is not authenticated (run: glab auth login)"
 
 log "Looking for the latest nightly pipeline in $PROJECT (mode=$DETECTION_MODE)"

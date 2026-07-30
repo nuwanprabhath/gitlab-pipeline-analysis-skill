@@ -5,6 +5,26 @@ All notable changes to this skill are documented here. Format follows
 [Semantic Versioning](https://semver.org/) and is tracked in the `version`
 field of [`SKILL.md`](SKILL.md)'s frontmatter.
 
+## [2.1.2] - 2026-07-30
+
+### Fixed
+- **`ERROR: glab not on PATH` on Apple Silicon Macs.** Homebrew installs to
+  `/opt/homebrew/bin` there (Intel Macs use `/usr/local/bin`, which was already
+  covered), and that directory was missing from the runner's PATH fallbacks —
+  so any invocation without the user's interactive PATH, including macOS cron,
+  failed the preflight even though `glab` was installed. `/opt/homebrew/bin`,
+  `/opt/homebrew/sbin` and `/snap/bin` are now searched too.
+- The "tool not found" errors are now diagnosable: they print the PATH that was
+  searched and name the config key to set, instead of just stating the tool is
+  missing.
+
+### Added
+- `CLAUDE_BIN`, `GLAB_BIN` and `PYTHON_BIN` config keys — absolute paths for
+  tools installed somewhere the fallbacks don't cover. The override's directory
+  is prepended to PATH rather than only being invoked directly, so child
+  processes (`find_nightly_pipeline.py` shelling out to `glab`, and the Claude
+  run itself) resolve it too.
+
 ## [2.1.1] - 2026-07-30
 
 ### Fixed

@@ -8,7 +8,7 @@ description: >-
   clickable job links, then group failures by root cause and offer to open a
   GitLab issue for the dominant cluster. Use when asked to investigate, analyze,
   triage, or summarize CI / pipeline test failures, or to classify why specs failed.
-version: 2.1.1
+version: 2.1.2
 ---
 
 # GitLab Pipeline Failure Analysis

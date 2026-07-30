@@ -281,6 +281,58 @@ class NightlyReportTests(unittest.TestCase):
         self.assertIn("not authenticated", r.stdout + r.stderr)
         self.assertFalse((self.out / "claude_args.txt").exists())
 
+    # --- tool discovery ------------------------------------------------------
+
+    def test_bin_override_is_used_and_reaches_child_processes(self):
+        """GLAB_BIN must not just be called directly — its directory has to join
+        PATH, because find_nightly_pipeline.py shells out to `glab` itself."""
+        odd = self.root / "opt" / "weird place"
+        odd.mkdir(parents=True)
+        shutil.move(str(self.bin / "glab"), str(odd / "glab"))
+        marker = self.root / "override_glab_ran"
+        (odd / "glab").write_text(
+            GLAB_STUB.replace(
+                'cat "$STUB_GLAB_PAYLOAD"',
+                f'touch "{marker}"\ncat "$STUB_GLAB_PAYLOAD"',
+            )
+        )
+        (odd / "glab").chmod(0o755)
+
+        self.write_config(GLAB_BIN=str(odd / "glab"))
+        r = self.run_script()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue(
+            marker.exists(),
+            "the overridden glab was not reached by the child process",
+        )
+
+    def test_missing_tool_error_names_the_config_key_and_the_path(self):
+        """Regression: `glab not on PATH` gave no clue that Homebrew on Apple
+        Silicon (/opt/homebrew/bin) is outside the fallback list."""
+        (self.bin / "claude").unlink()
+        (self.fallback_bin / "claude").unlink()  # $HOME is redirected here
+        # Drop the inherited PATH too, or the developer's own claude is found
+        # (and actually invoked). The script still appends its own fallbacks.
+        r = self.run_script(PATH=f"{self.bin}:/usr/bin:/bin")
+        self.assertNotEqual(r.returncode, 0)
+        output = r.stdout + r.stderr
+        self.assertIn("CLAUDE_BIN", output)
+        self.assertIn("PATH=", output)
+
+    def test_apple_silicon_homebrew_is_on_the_fallback_path(self):
+        """glab installs to /opt/homebrew/bin on Apple Silicon; omitting it is
+        what broke the first real macOS run."""
+        path_lines = [
+            ln for ln in RUNNER.read_text().splitlines()
+            if ln.startswith("export PATH=")
+        ]
+        self.assertTrue(path_lines, "no `export PATH=` line found in the runner")
+        # Assert on the assignment itself — a mention in a nearby comment is
+        # not the same as the directory actually being searched.
+        assignment = path_lines[0]
+        for expected in ("/opt/homebrew/bin", "/snap/bin", "$HOME/.local/bin"):
+            self.assertIn(expected, assignment, expected)
+
     # --- notification degradation -------------------------------------------
 
     def test_notify_send_failure_does_not_fail_the_run(self):
