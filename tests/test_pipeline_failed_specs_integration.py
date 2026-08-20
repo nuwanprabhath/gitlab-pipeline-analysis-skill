@@ -57,6 +57,7 @@ class MainIntegrationTests(unittest.TestCase):
         self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
         with patch.object(sys, "argv", ["pipeline_failed_specs.py", *argv_tail]), \
              patch.object(pfs, "fetch_all_jobs", lambda p, pid: JOBS), \
+             patch.object(pfs, "fetch_bridges", lambda p, pid: []), \
              patch.object(pfs, "fetch_job_trace", lambda p, jid: TRACES[jid]), \
              patch.object(pfs, "CYPRESS_INTEGRATION_DIR", None):
             cwd = os.getcwd()
@@ -128,6 +129,41 @@ class MainIntegrationTests(unittest.TestCase):
         with open(tmp / "all_specs_999888777.csv", newline="") as fh:
             specs = [r["Spec"] for r in csv.DictReader(fh)]
         self.assertEqual(set(specs), {"a.cy.js", "b.cy.js", "c.cy.js"})
+
+
+class GatherCypressJobsTests(unittest.TestCase):
+    """gather_cypress_jobs must reach into downstream child pipelines (offline
+    suite) and tag their jobs with the node index from the bridge name."""
+
+    def test_offline_child_pipeline_jobs_are_collected_and_node_tagged(self):
+        parent_jobs = [
+            {"id": 100, "name": "cypress-run 1/2", "created_at": "2026-06-30T10:00:00Z"},
+            {"id": 300, "name": "commitlint", "created_at": "2026-06-30T09:00:00Z"},
+        ]
+        child_jobs = {
+            555: [{"id": 5551, "name": "cypress-offline-child", "created_at": "2026-06-30T11:00:00Z"},
+                  {"id": 5552, "name": "deploy-offline-stack", "created_at": "2026-06-30T10:30:00Z"}],
+        }
+        bridges = [
+            {"name": "cypress-offline-node-2", "downstream_pipeline": {"id": 555}},
+            {"name": "some-skipped-bridge", "downstream_pipeline": None},  # never triggered
+        ]
+
+        def fake_all_jobs(project, pid):
+            return parent_jobs if str(pid) == "999" else child_jobs.get(pid, [])
+
+        with patch.object(pfs, "fetch_all_jobs", fake_all_jobs), \
+             patch.object(pfs, "fetch_bridges", lambda p, pid: bridges):
+            jobs = pfs.gather_cypress_jobs("proj", "999")
+
+        by_id = {j["id"]: j for j in jobs}
+        self.assertIn(100, by_id)            # parent cypress job kept
+        self.assertNotIn(300, by_id)         # non-cypress parent job dropped
+        self.assertIn(5551, by_id)           # child offline cypress job pulled in
+        self.assertNotIn(5552, by_id)        # non-cypress child job dropped
+        self.assertEqual(by_id[5551]["_offline_node"], "2")  # node from bridge name
+        # sorted chronologically
+        self.assertEqual([j["id"] for j in jobs], [100, 5551])
 
 
 if __name__ == "__main__":

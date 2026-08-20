@@ -237,6 +237,21 @@ class ExportXlsxTests(unittest.TestCase):
         self.assertIn("a.cy.js [run 3/8]", specs)
         self.assertIn("b.cy.js (priority) [priority 2/6]", specs)
 
+    def test_offline_spec_gets_offline_node_suffix(self):
+        # offline suite runs in child pipelines; the node index rides on the run
+        # dict and renders flush against the (offline) marker: (offline)[node-N]
+        self.write([mk("a.cy.js", first=JOB + "1"), mk("b.cy.js", first=JOB + "2")])
+        sr = {
+            "a.cy.js": [{"job_id": "1", "job_name": "cypress-offline-child",
+                         "stage": "test-cypress-offline", "node": "1", "status": "FAILED"}],
+            # no node field -> fall back to parsing the bridge-style job name
+            "b.cy.js": [{"job_id": "2", "job_name": "cypress-offline-node-4",
+                         "stage": "test-cypress-offline", "status": "FAILED"}],
+        }
+        specs = [r[0] for r in xlsx.read_sheet(self.export(spec_runs=sr))[1:]]
+        self.assertIn("a.cy.js (offline)[node-1]", specs)
+        self.assertIn("b.cy.js (offline)[node-4]", specs)
+
     def test_priority_suffix_not_in_all_specs_sheet(self):
         # all_specs already shows the job name in-cell, so no suffix there
         header = ["Spec", "first_job_url", "second_job_url"]

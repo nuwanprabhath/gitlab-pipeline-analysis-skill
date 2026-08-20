@@ -8,7 +8,7 @@ description: >-
   clickable job links, then group failures by root cause and offer to open a
   GitLab issue for the dominant cluster. Use when asked to investigate, analyze,
   triage, or summarize CI / pipeline test failures, or to classify why specs failed.
-version: 2.1.3
+version: 2.1.4
 ---
 
 # GitLab Pipeline Failure Analysis
@@ -53,9 +53,12 @@ in step 7. Let `PID` be the pipeline id.
    python3 "$SKILL_DIR/scripts/pipeline_failed_specs.py" <pipeline> \
      [-p <group/project>]
    ```
-   Fetches every cypress-run / cypress-priority job attempt (jobs retry once,
-   so max 2 attempts), parses each trace's `[SPEC START]`/`[SPEC END]` markers
-   for per-spec pass/fail, and writes three files (override with `-o`/`-u`):
+   Fetches every Cypress job attempt (jobs retry once, so max 2 attempts) —
+   including jobs that run in downstream child pipelines, such as the offline
+   suite (`cypress-offline-node-N` bridges → child pipelines whose
+   `cypress-offline-child` job holds the specs) — parses each trace's
+   `[SPEC START]`/`[SPEC END]` markers for per-spec pass/fail, and writes three
+   files (override with `-o`/`-u`):
    - `all_specs_$PID.csv` — every spec that ran (passed or failed), with
      `first_job_url, second_job_url` (its 1st/2nd attempt, chronological).
    - `failed_specs_unique_$PID.csv` — the failed specs, fixed column order:
@@ -265,7 +268,8 @@ suffixed with the pipeline id so runs for different pipelines coexist):
 - **`failed_specs_unique_$PID.xlsx`** — the primary deliverable: failed specs,
   sorted by spec (specs show `<spec> (priority)` or `<spec> (setup)` when they
   ran in the priority or setup stage, followed by the parallel shard bracket
-  `[run 3/8]` / `[priority 2/6]` / `[setup]`). Columns:
+  `[run 3/8]` / `[priority 2/6]` / `[setup]`; offline-suite specs show
+  `<spec> (offline)[node-N]` for their child-pipeline node). Columns:
   `Failed spec, Passed on retry, New failure, bug_likelihood_(AI), Note,
   Locally reproducible, failure_cause, first_cypress_url, second_cypress_url,
   first_job_url, second_job_url`.
@@ -296,9 +300,11 @@ produced during the run and removed in step 7.
 ## Notes
 
 - Every job whose name contains `cypress` is parsed for specs (cypress-run,
-  cypress-priority, cypress-setup, cypress-smoke-test — a cypress job with no
-  `[SPEC START]` markers simply contributes nothing); non-cypress job
-  failures (commitlint, sonarcloud, setup) appear in the per-job sheet
+  cypress-priority, cypress-setup, cypress-smoke-test, and the offline suite's
+  `cypress-offline-child` in child pipelines — a cypress job with no
+  `[SPEC START]` markers simply contributes nothing). Child (triggered)
+  pipelines are followed via the parent's bridges, so offline specs are
+  included; non-cypress job failures (commitlint, sonarcloud, setup) appear in the per-job sheet
   (`failed_specs_$PID.xlsx`) with an empty spec — mention them but they don't
   get a `failure_cause`.
 - Specs with `Note: Unable to find outputs` had a `[SPEC START]` in that job's

@@ -5,6 +5,19 @@ All notable changes to this skill are documented here. Format follows
 [Semantic Versioning](https://semver.org/) and is tracked in the `version`
 field of [`SKILL.md`](SKILL.md)'s frontmatter.
 
+## [2.1.4] - 2026-07-30
+
+### Added
+- **Offline-suite specs are now included.** The offline Cypress tests run in
+  downstream child pipelines (`cypress-offline-node-N` bridges → child
+  pipelines whose `cypress-offline-child` job holds the specs), which the
+  gatherer previously never looked at — so offline failures were silently
+  missing from every report. It now follows the parent pipeline's bridges into
+  those child pipelines, so offline specs appear in both sheets. In the
+  failed-specs sheet they're tagged `<spec> (offline)[node-N]` — `node-N` is
+  the parallel node parsed from the bridge name, so offline failures are
+  distinguishable from online ones.
+
 ## [2.1.3] - 2026-07-30
 
 ### Fixed

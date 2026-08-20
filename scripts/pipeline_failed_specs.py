@@ -2,9 +2,10 @@
 """
 Map every Cypress spec in a GitLab CI pipeline to the job attempts it ran in.
 
-Fetches all cypress-run / cypress-priority job attempts (jobs retry once, so
-max 2 attempts), parses each trace's `[SPEC START]`/`[SPEC END]` markers for
-per-spec pass/fail, and writes:
+Fetches all Cypress job attempts (jobs retry once, so max 2 attempts) —
+including those that run in downstream child pipelines, such as the offline
+suite (`cypress-offline-node-N` bridges → child pipelines) — parses each
+trace's `[SPEC START]`/`[SPEC END]` markers for per-spec pass/fail, and writes:
   - all_specs_<pid>.csv        every spec + its 1st/2nd job attempt
   - failed_specs_unique_<pid>.csv  failed specs, classification columns blank
   - spec_runs_<pid>.json       sidecar with per-attempt status (for colouring)
@@ -149,6 +150,46 @@ def fetch_job_trace(project, job_id):
     return glab(f"projects/{project_enc}/jobs/{job_id}/trace")
 
 
+def fetch_bridges(project, pipeline_id):
+    """Trigger (bridge) jobs of a pipeline, each pointing at a downstream child
+    pipeline. Some Cypress suites run in child pipelines (e.g. the offline suite
+    runs as `cypress-offline-node-N` bridges → child pipelines whose
+    `cypress-offline-child` job holds the specs), so those jobs are NOT in the
+    parent pipeline's own job list. Degrades to [] on older GitLab / no access."""
+    project_enc = urllib.parse.quote(project, safe="")
+    try:
+        return glab_paginated(
+            f"projects/{project_enc}/pipelines/{pipeline_id}/bridges?per_page=100"
+        )
+    except subprocess.CalledProcessError:
+        return []
+
+
+_OFFLINE_NODE_RE = re.compile(r"node-?(\d+)", re.I)
+
+
+def gather_cypress_jobs(project, pipeline_id):
+    """All Cypress job attempts for a pipeline, INCLUDING those that run in
+    downstream child pipelines. Child-pipeline jobs are tagged with the parallel
+    node index parsed from their triggering bridge name (`_offline_node`), so
+    e.g. the offline suite's specs can be labelled `(offline)[node-N]`."""
+    jobs = [dict(j) for j in fetch_all_jobs(project, pipeline_id)
+            if is_cypress_job(j["name"])]
+    for bridge in fetch_bridges(project, pipeline_id):
+        child = bridge.get("downstream_pipeline") or {}
+        child_id = child.get("id")
+        if not child_id:
+            continue  # bridge that didn't trigger a child (skipped/manual)
+        m = _OFFLINE_NODE_RE.search(bridge.get("name", ""))
+        node = m.group(1) if m else ""
+        for j in fetch_all_jobs(project, child_id):
+            if is_cypress_job(j["name"]):
+                j = dict(j)
+                j["_offline_node"] = node
+                jobs.append(j)
+    return sorted(jobs, key=lambda j: j["created_at"])
+
+
 def clean_log(log):
     log = ANSI_RE.sub("", log)
     log = GITLAB_LINE_PREFIX_RE.sub("", log)
@@ -284,12 +325,8 @@ def main():
     def job_url(job_id):
         return f"{GITLAB_BASE_URL}/{args.project}/-/jobs/{job_id}"
 
-    sys.stderr.write(f"Fetching all jobs for pipeline {pipeline_id}...\n")
-    all_jobs = fetch_all_jobs(args.project, pipeline_id)
-    cypress_jobs = sorted(
-        (j for j in all_jobs if is_cypress_job(j["name"])),
-        key=lambda j: j["created_at"],
-    )
+    sys.stderr.write(f"Fetching all jobs for pipeline {pipeline_id} (incl. child pipelines)...\n")
+    cypress_jobs = gather_cypress_jobs(args.project, pipeline_id)
     sys.stderr.write(f"Found {len(cypress_jobs)} cypress job attempt(s).\n")
 
     # spec (basename) -> chronological list of runs. Each run is one job attempt
@@ -308,6 +345,8 @@ def main():
                 "job_id": job["id"],
                 "job_name": job["name"],
                 "stage": job.get("stage", ""),
+                # parallel node index for child-pipeline (offline) jobs; "" otherwise
+                "node": job.get("_offline_node", ""),
                 "status": status.get(full) or "MISSING",
                 "created_at": job["created_at"],
                 "job_url": job_url(job["id"]),

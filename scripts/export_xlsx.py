@@ -76,11 +76,13 @@ def _run_at(runs, idx):
 
 
 def _partition_marker(runs):
-    """Return ' (priority)' / ' (setup)' / '' from the spec's job stage or name
-    (derived at runtime, never hardcoded, since specs move between partitions).
-    Main `cypress-run` specs get no marker."""
+    """Return ' (offline)' / ' (priority)' / ' (setup)' / '' from the spec's job
+    stage or name (derived at runtime, never hardcoded, since specs move between
+    partitions). Main `cypress-run` specs get no marker."""
     def txt(r):
         return f"{r.get('stage', '')} {r.get('job_name', '')}".lower()
+    if any("offline" in txt(r) for r in runs):
+        return " (offline)"
     if any("priority" in txt(r) for r in runs):
         return " (priority)"
     if any(("setup" in txt(r)) or ("smoke" in txt(r)) for r in runs):
@@ -98,10 +100,23 @@ _PARTITION_KINDS = (
 
 
 def _shard_marker(runs):
-    """Return ' [run 3/8]' / ' [priority 2/6]' / ' [setup]' — which parallel
-    shard the spec ran in, taken from the GitLab job name (e.g. `cypress-run
-    3/8`) at runtime. '' when the partition can't be determined. Jobs without a
-    parallel index (e.g. `cypress-smoke-test`) get just the kind: ' [setup]'."""
+    """Return ' [run 3/8]' / ' [priority 2/6]' / ' [setup]' / '[node-1]' — which
+    parallel shard the spec ran in, taken from the GitLab job name (e.g.
+    `cypress-run 3/8`) at runtime. '' when the partition can't be determined.
+    Jobs without a parallel index (e.g. `cypress-smoke-test`) get just the kind.
+
+    The offline suite is special: it runs as `cypress-offline-node-N` bridges
+    into child pipelines, so the node index is carried on the run dict (`node`)
+    and rendered as `[node-N]` with no leading space, to sit flush against the
+    `(offline)` marker (e.g. `spec.cy.js (offline)[node-1]`)."""
+    for r in runs:
+        hay = f"{r.get('stage', '')} {r.get('job_name', '')}".lower()
+        if "offline" in hay:
+            node = str(r.get("node") or "").strip()
+            if not node:
+                m = re.search(r"node-?(\d+)", r.get("job_name", ""), re.I)
+                node = m.group(1) if m else ""
+            return f"[node-{node}]" if node else "[offline]"
     for kind, keys in _PARTITION_KINDS:
         for r in runs:
             hay = f"{r.get('stage', '')} {r.get('job_name', '')}".lower()
