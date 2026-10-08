@@ -5,6 +5,42 @@ All notable changes to this skill are documented here. Format follows
 [Semantic Versioning](https://semver.org/) and is tracked in the `version`
 field of [`SKILL.md`](SKILL.md)'s frontmatter.
 
+## [2.2.1] - 2026-10-09
+
+### Fixed
+- **Offline failures that passed on a manual re-run were dropped.** Re-running
+  a `cypress-offline-node-N` bridge triggers a new child pipeline, and GitLab's
+  default bridges listing then shows only the new bridge. Both
+  `pipeline_failed_specs.py` and `extract_failures.py` fetched bridges without
+  `include_retried=true`, so they only followed the passing re-run. In pipeline
+  2925615481, `offline-floristics-and-dependencies.cy.js` failed on node-1
+  (job 17023945207) and passed on the re-run (17043252710), but the report
+  showed no offline failure. Both scripts now follow retried bridges, so the
+  spec shows as `Passed on retry: yes` with both attempts.
+
+## [2.2.0] - 2026-09-25
+
+### Fixed
+- **Failed Cypress jobs that never started a spec were silently dropped.** Rows
+  were only ever created from `[SPEC START]`/`[SPEC END]` markers, so a job
+  that died before its first spec contributed nothing. In pipeline 2879264052,
+  7 offline child jobs (4 of 5 offline nodes) failed on `Cypress verification
+  timed out.` and 11 offline specs never ran, yet the report showed no offline
+  failures at all. Such jobs are now reported with `Note: NO SPECS RAN:
+  <reason>` (reason parsed from the trace). For offline jobs the planned specs
+  are recovered by evaluating `sortOfflineSpecs(node, SPEC_GROUP)` from
+  `cypress-parallel-offline.js` at the pipeline's commit, so each spec gets its
+  own row (`<spec> (offline)[node-N]`); otherwise the job gets a
+  `<job> (no specs ran)` row. Attempts are stored as `NOT_RUN` and shown red.
+- **`extract_failures.py` ignored child pipelines**, so offline failures never
+  got a failure record. It now follows bridges like the sheet builder does, keys
+  child jobs by offline node (nodes 1/2/4 share the job name
+  `cypress-offline-child` and were at risk of being merged as retries), and
+  records aborted jobs with the new `error_kind: job-aborted`.
+- **New-failure comparison marked every offline spec as new** because the
+  `(offline)` marker and `[node-N]` bracket weren't stripped when reading a
+  previous `.xlsx`.
+
 ## [2.1.4] - 2026-07-30
 
 ### Added

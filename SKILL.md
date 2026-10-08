@@ -8,7 +8,7 @@ description: >-
   clickable job links, then group failures by root cause and offer to open a
   GitLab issue for the dominant cluster. Use when asked to investigate, analyze,
   triage, or summarize CI / pipeline test failures, or to classify why specs failed.
-version: 2.1.4
+version: 2.2.1
 ---
 
 # GitLab Pipeline Failure Analysis
@@ -56,7 +56,9 @@ in step 7. Let `PID` be the pipeline id.
    Fetches every Cypress job attempt (jobs retry once, so max 2 attempts) —
    including jobs that run in downstream child pipelines, such as the offline
    suite (`cypress-offline-node-N` bridges → child pipelines whose
-   `cypress-offline-child` job holds the specs) — parses each trace's
+   `cypress-offline-child` job holds the specs, including the child pipelines
+   of bridges that were re-run, so a failure fixed by a manual re-run still
+   shows as passed-on-retry) — parses each trace's
    `[SPEC START]`/`[SPEC END]` markers for per-spec pass/fail, and writes three
    files (override with `-o`/`-u`):
    - `all_specs_$PID.csv` — every spec that ran (passed or failed), with
@@ -74,6 +76,17 @@ in step 7. Let `PID` be the pipeline id.
    `Note: JOB CRASHED` started (per a `[SPEC START]` marker) but the job never
    logged a matching `[SPEC END]` — it likely crashed/timed out/OOM'd mid-spec,
    so pass/fail is unknown; call these out separately.
+
+   Specs marked `Note: NO SPECS RAN: <reason>` belong to a **failed Cypress job
+   that never started a single spec** (e.g. `Cypress verification timed out.`,
+   binary/install failure), so the trace has no `[SPEC START]` markers. For
+   offline child jobs the planned specs are recovered by evaluating
+   `sortOfflineSpecs(node, SPEC_GROUP)` from
+   `paratoo-webapp/scripts/cypress-parallel-offline.js` at the pipeline's
+   commit (needs `node` on PATH), and each gets a row. If that can't be
+   resolved, the job itself gets a row keyed `<job name> node-N (no specs
+   ran)`. The script prints a `ran NO specs` summary — always report these:
+   the spec didn't fail, it never got to run, so its coverage is missing.
 
 3. **Flag newly-introduced failures (optional, only if a previous run exists).**
    Ask the script for the most recent prior unique CSV in the working folder:
@@ -113,7 +126,8 @@ in step 7. Let `PID` be the pipeline id.
    `test/cypress/support/commands.js:1382` — custom commands hold most
    asserted behavior; `first_error_spec_line` is set when a frame hits the
    spec itself), an `error_kind` tag (`value-mismatch` / `app-error` =
-   real-bug signal; `element-timeout` = glitch-eligible), and all distinct
+   real-bug signal; `element-timeout` = glitch-eligible; `job-aborted` = the
+   job died before the spec started, see step 5), and all distinct
    error signatures. The JSON header also carries the pipeline's commit `sha`
    — the exact code the pipeline ran. It prints a "BUG-SIGNAL specs" list;
    none of those may end up labelled a Cypress glitch.
@@ -167,6 +181,13 @@ in step 7. Let `PID` be the pipeline id.
       pin); LOW = **only** genuine `element-timeout` Cypress-glitch families,
       cascades of one, ordering deps, test bugs, or flaky-passed-on-retry.
 
+   **`job-aborted` specs** (`Note: NO SPECS RAN`) have no test result at all.
+   Classify them as CI/infra, e.g. `not run: job aborted before first spec
+   (Cypress verification timed out) — CI infra, no test result`, with
+   `bug_likelihood` LOW. Group every spec sharing one abort reason into one
+   cluster (it's one infra incident, not N failures), and in the summary say
+   how many specs lost coverage.
+
    **Self-check before writing the mapping:** for every spec, confirm the
    `failure_cause` is a paraphrase of that spec's own `first_error`/signatures,
    and that no `value-mismatch`/`app-error` spec was labelled LOW/glitch. If a
@@ -208,7 +229,8 @@ in step 7. Let `PID` be the pipeline id.
    number** (clickable). Cell colours:
    - a job or cypress cell is **red** if the spec FAILED in that attempt;
      the failure-cause (bug-signal) job cell is **orange + bold** instead;
-   - `Note: JOB CRASHED` cell is red; `bug_likelihood_(AI): HIGH` and
+   - `Note: JOB CRASHED` / `Note: NO SPECS RAN: ...` cells are red (and so is
+     a `NOT_RUN` attempt's job cell); `bug_likelihood_(AI): HIGH` and
      `New failure: yes` cells are red; a `Passed on retry: yes` row is green;
    - in `all_specs`, each job cell shows `job# (job name)` and is **green if
      the spec passed** / red if it failed — so you can find which job a passed
@@ -283,6 +305,8 @@ suffixed with the pipeline id so runs for different pipelines coexist):
     are the matching Cypress Cloud runs, coloured the same way. Link text is
     the job number.
   - `Note: JOB CRASHED` (red) = a `[SPEC START]` with no matching `[SPEC END]`.
+  - `Note: NO SPECS RAN: <reason>` (red) = the job failed before its first
+    spec started; the spec has no result (see step 2).
   - For **flaky (passed-on-retry)** specs, `failure_cause` is enriched with the
     first-failure error (`flaky (passed on retry) — first failure: <error>`).
     Flaky specs stay LOW even if that first failure was a value/data mismatch.
@@ -301,8 +325,9 @@ produced during the run and removed in step 7.
 
 - Every job whose name contains `cypress` is parsed for specs (cypress-run,
   cypress-priority, cypress-setup, cypress-smoke-test, and the offline suite's
-  `cypress-offline-child` in child pipelines — a cypress job with no
-  `[SPEC START]` markers simply contributes nothing). Child (triggered)
+  `cypress-offline-child` in child pipelines). A *successful* cypress job
+  with no `[SPEC START]` markers contributes nothing; a *failed* one is
+  reported as `NO SPECS RAN` (step 2), never dropped. Child (triggered)
   pipelines are followed via the parent's bridges, so offline specs are
   included; non-cypress job failures (commitlint, sonarcloud, setup) appear in the per-job sheet
   (`failed_specs_$PID.xlsx`) with an empty spec — mention them but they don't

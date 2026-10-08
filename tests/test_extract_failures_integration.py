@@ -100,5 +100,115 @@ class MultiAttemptTests(unittest.TestCase):
         self.assertEqual(rec["cypress_run_url"], "https://cloud.cypress.io/projects/aa/runs/300")
 
 
+ABORT_TRACE = build_log(
+    gitlab_line("→ Running 2 offline specs"),
+    gitlab_line("[FAILED] [15:01:15] Cypress verification timed out."),
+    gitlab_line("ERROR: Job failed: exit code 1"),
+)
+OFFLINE_ATTEMPTS = {
+    "cypress-offline-child-3: [pair] [node-3]": [
+        {"id": 731, "name": "cypress-offline-child-3: [pair]", "status": "failed",
+         "created_at": "2026-09-24T15:00:00Z", "_offline_node": "3"},
+    ],
+    "cypress-offline-child [node-2]": [
+        {"id": 721, "name": "cypress-offline-child", "status": "failed",
+         "created_at": "2026-09-24T15:00:00Z", "_offline_node": "2"},
+    ],
+}
+
+
+class NoSpecsRanExtractTests(unittest.TestCase):
+    """Jobs that died before their first spec must still get failure records,
+    or the sheet's rows come out UNCLASSIFIED."""
+
+    def run_main(self):
+        tmp = tempfile.mkdtemp()
+        out = Path(tmp) / "failures_raw_1.json"
+        planned = {("3", "pair"): ["test/cypress/integration/offline/a.cy.js",
+                                   "test/cypress/integration/offline/b.cy.js"],
+                   ("2", ""): []}
+        with patch.object(sys, "argv", ["extract_failures.py", "555", "-o", str(out)]), \
+             patch.object(ef, "cypress_job_attempts", lambda p, pid: OFFLINE_ATTEMPTS), \
+             patch.object(ef, "glab", lambda path: ABORT_TRACE), \
+             patch.object(ef.pfs, "planned_offline_specs",
+                          lambda proj, sha, node, group: planned[(node, group)]), \
+             patch.object(ef, "fetch_pipeline_info", lambda p, pid: {"sha": "sha1", "web_url": "u"}):
+            with contextlib.redirect_stderr(io.StringIO()):
+                ef.main()
+        data = json.loads(out.read_text())
+        os.remove(out)
+        return {r["spec"]: r for r in data["specs"]}
+
+    def test_planned_specs_get_job_aborted_records(self):
+        specs = self.run_main()
+        for spec in ("a.cy.js", "b.cy.js"):
+            rec = specs[spec]
+            self.assertEqual(rec["error_kind"], "job-aborted")
+            self.assertEqual(rec["first_error"], "Cypress verification timed out.")
+            self.assertEqual(rec["job_id"], 731)
+            self.assertEqual(rec["spec_path"], f"test/cypress/integration/offline/{spec}")
+
+    def test_unresolvable_job_uses_same_key_as_sheet(self):
+        specs = self.run_main()
+        self.assertIn("cypress-offline-child node-2 (no specs ran)", specs)
+
+
+class CypressJobAttemptsChildPipelineTests(unittest.TestCase):
+    """Offline specs run in child pipelines; classification must see them, and
+    same-named child jobs on different nodes must not be merged as retries."""
+
+    def test_follows_bridges_and_keys_by_node(self):
+        def fake(path):
+            if "/pipelines/555/jobs" in path:
+                return json.dumps([{"id": 1, "name": "cypress-run 1/8", "status": "success",
+                                    "created_at": "2026-09-24T14:00:00Z"}])
+            if "/pipelines/555/bridges" in path:
+                return json.dumps([
+                    {"name": "cypress-offline-node-1", "downstream_pipeline": {"id": 71}},
+                    {"name": "cypress-offline-node-2", "downstream_pipeline": {"id": 72}},
+                    {"name": "cypress-offline-node-4", "downstream_pipeline": None},
+                ])
+            m = re.search(r"/pipelines/(7\d)/jobs", path)
+            if m:
+                return json.dumps([
+                    {"id": int(m.group(1)) * 10, "name": "cypress-offline-child", "status": "failed",
+                     "created_at": "2026-09-24T15:00:00Z"},
+                    {"id": int(m.group(1)) * 10 + 1, "name": "deploy-offline-stack", "status": "success",
+                     "created_at": "2026-09-24T14:59:00Z"},
+                ])
+            raise AssertionError(path)
+
+        with patch.object(ef, "glab", fake):
+            got = ef.cypress_job_attempts("group/proj", "555")
+        self.assertEqual(set(got), {"cypress-run 1/8", "cypress-offline-child [node-1]",
+                                    "cypress-offline-child [node-2]"})
+        self.assertEqual(got["cypress-offline-child [node-2]"][0]["_offline_node"], "2")
+
+    def test_follows_retried_bridges(self):
+        """A manually re-run bridge gets a NEW child pipeline; GitLab only lists
+        the old bridge (and its failed child) with include_retried=true. Both
+        children's jobs must land under the same node key, oldest first."""
+        def fake(path):
+            if "/pipelines/555/jobs" in path:
+                return json.dumps([])
+            if "/pipelines/555/bridges" in path:
+                latest = [{"name": "cypress-offline-node-1", "downstream_pipeline": {"id": 72}}]
+                if "include_retried=true" not in path:
+                    return json.dumps(latest)
+                return json.dumps(latest + [
+                    {"name": "cypress-offline-node-1", "downstream_pipeline": {"id": 71}}])
+            if "/pipelines/71/jobs" in path:
+                return json.dumps([{"id": 710, "name": "cypress-offline-child", "status": "failed",
+                                    "created_at": "2026-10-08T08:37:23Z"}])
+            if "/pipelines/72/jobs" in path:
+                return json.dumps([{"id": 720, "name": "cypress-offline-child", "status": "success",
+                                    "created_at": "2026-10-08T20:40:10Z"}])
+            raise AssertionError(path)
+
+        with patch.object(ef, "glab", fake):
+            got = ef.cypress_job_attempts("group/proj", "555")
+        self.assertEqual([j["id"] for j in got["cypress-offline-child [node-1]"]], [710, 720])
+
+
 if __name__ == "__main__":
     unittest.main()

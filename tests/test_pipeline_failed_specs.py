@@ -1,7 +1,10 @@
+import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 SCRIPTS_DIR = Path(__file__).resolve().parent.parent / "scripts"
 sys.path.insert(0, str(SCRIPTS_DIR))
@@ -221,6 +224,101 @@ class BuildCypressCommandTests(unittest.TestCase):
         self.assertEqual(
             cmd, f'yarn cypress run --browser chrome --spec "{RUN_A},{RUN_B}"'
         )
+
+
+VERIFY_TIMEOUT_TRACE = build_log(
+    gitlab_line("=== Running Cypress (job type: offline) ==="),
+    gitlab_line("→ Calculating offline spec list (node 1)..."),
+    gitlab_line("→ Running 1 offline specs"),
+    gitlab_line("→ Starting Cypress run..."),
+    gitlab_line("[STARTED] [15:00:45]  Verifying Cypress can run /root/.cache/Cypress/15.21.0/Cypress"),
+    gitlab_line("[FAILED] [15:01:15] Cypress verification timed out."),
+    gitlab_line("Cypress verification timed out."),
+    gitlab_line("→ Cypress exited with code: 1"),
+    gitlab_line("Running after_script"),
+    gitlab_line("ERROR: Job failed: exit code 1"),
+)
+
+
+class DetectJobAbortTests(unittest.TestCase):
+    """A Cypress job can fail before its first spec starts (binary verification
+    timeout, install failure, ...). Its trace has no [SPEC START] markers, so
+    the reason has to come from the trace itself.
+
+    Regression: pipeline 2879264052 lost 11 offline specs across 7 jobs that
+    all died on "Cypress verification timed out." -- the report showed no
+    offline failures at all.
+    """
+
+    def test_verification_timeout_is_reported(self):
+        self.assertEqual(pfs.detect_job_abort(VERIFY_TIMEOUT_TRACE),
+                         "Cypress verification timed out.")
+
+    def test_unknown_abort_falls_back_to_generic_reason(self):
+        trace = build_log(gitlab_line("something odd"), gitlab_line("ERROR: Job failed: exit code 137"))
+        self.assertEqual(pfs.detect_job_abort(trace), "ERROR: Job failed: exit code 137")
+
+    def test_no_signal_at_all_still_gives_a_reason(self):
+        self.assertIn("no [SPEC START]", pfs.detect_job_abort(build_log(gitlab_line("hello"))))
+
+
+class SpecGroupFromJobNameTests(unittest.TestCase):
+    def test_matrix_job_name(self):
+        self.assertEqual(pfs.spec_group_from_job_name("cypress-offline-child-3: [camera-soils]"),
+                         "camera-soils")
+
+    def test_plain_job_name(self):
+        self.assertEqual(pfs.spec_group_from_job_name("cypress-offline-child"), "")
+        self.assertEqual(pfs.spec_group_from_job_name("cypress-run 3/8"), "")
+
+
+SHARD_SCRIPT = """
+const TEST_FOLDER = './test/cypress/integration/offline'
+const GROUPS = { drones: ['offline-drones.cy.js'], pair: ['a.cy.js', 'b.cy.js'] }
+if (require.main === module) { throw new Error('must not run as main') }
+function sortOfflineSpecs(nodeIndex, specGroup) {
+  switch (nodeIndex) {
+    case 1: return [TEST_FOLDER + '/offline-floristics.cy.js']
+    case 3: return (specGroup ? GROUPS[specGroup] : Object.values(GROUPS).flat()).map((f) => TEST_FOLDER + '/' + f)
+    default: throw new Error('out of range')
+  }
+}
+module.exports = { sortOfflineSpecs }
+"""
+
+
+@unittest.skipUnless(shutil.which("node"), "node not installed")
+class PlannedOfflineSpecsTests(unittest.TestCase):
+    """The offline shard table is code (sortOfflineSpecs), so the specs a job
+    was *supposed* to run can be recovered even when it never started one."""
+
+    def setUp(self):
+        pfs._PLANNED_CACHE.clear()
+        self.addCleanup(pfs._PLANNED_CACHE.clear)
+
+    def planned(self, node, group, script=SHARD_SCRIPT):
+        with patch.object(pfs, "fetch_repo_file", lambda proj, path, ref: script):
+            return pfs.planned_offline_specs("proj", "sha1", node, group)
+
+    def test_single_spec_node(self):
+        self.assertEqual(self.planned("1", ""),
+                         ["test/cypress/integration/offline/offline-floristics.cy.js"])
+
+    def test_matrix_group(self):
+        self.assertEqual(self.planned("3", "pair"),
+                         ["test/cypress/integration/offline/a.cy.js",
+                          "test/cypress/integration/offline/b.cy.js"])
+
+    def test_broken_script_degrades_to_empty(self):
+        self.assertEqual(self.planned("9", ""), [])
+        pfs._PLANNED_CACHE.clear()
+        self.assertEqual(self.planned("1", "", script="syntax error("), [])
+
+    def test_missing_file_degrades_to_empty(self):
+        def boom(proj, path, ref):
+            raise subprocess.CalledProcessError(1, "glab")
+        with patch.object(pfs, "fetch_repo_file", boom):
+            self.assertEqual(pfs.planned_offline_specs("proj", "sha1", "1", ""), [])
 
 
 if __name__ == "__main__":

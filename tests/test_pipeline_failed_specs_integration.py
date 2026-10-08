@@ -165,6 +165,132 @@ class GatherCypressJobsTests(unittest.TestCase):
         # sorted chronologically
         self.assertEqual([j["id"] for j in jobs], [100, 5551])
 
+    def test_fetch_bridges_includes_retried(self):
+        """Re-running a bridge replaces it in the default listing, hiding the
+        failed child pipeline; include_retried=true keeps both."""
+        seen = []
+        with patch.object(pfs, "glab_paginated", lambda path: seen.append(path) or []):
+            pfs.fetch_bridges("group/proj", "999")
+        self.assertEqual(len(seen), 1)
+        self.assertIn("include_retried=true", seen[0])
+
+    def test_retried_bridge_children_are_both_gathered(self):
+        parent_jobs = []
+        child_jobs = {
+            71: [{"id": 710, "name": "cypress-offline-child", "created_at": "2026-10-08T08:37:23Z"}],
+            72: [{"id": 720, "name": "cypress-offline-child", "created_at": "2026-10-08T20:40:10Z"}],
+        }
+        bridges = [  # newest attempt first, as GitLab returns them
+            {"name": "cypress-offline-node-1", "downstream_pipeline": {"id": 72}},
+            {"name": "cypress-offline-node-1", "downstream_pipeline": {"id": 71}},
+        ]
+
+        def fake_all_jobs(project, pid):
+            return parent_jobs if str(pid) == "999" else child_jobs.get(pid, [])
+
+        with patch.object(pfs, "fetch_all_jobs", fake_all_jobs), \
+             patch.object(pfs, "fetch_bridges", lambda p, pid: bridges):
+            jobs = pfs.gather_cypress_jobs("proj", "999")
+        self.assertEqual([j["id"] for j in jobs], [710, 720])
+        self.assertEqual({j["_offline_node"] for j in jobs}, {"1"})
+
+
+ABORTED_TRACE = build_log(
+    gitlab_line("→ Running 1 offline specs"),
+    gitlab_line("[FAILED] [15:01:15] Cypress verification timed out."),
+    gitlab_line("Cypress verification timed out."),
+    gitlab_line("→ Cypress exited with code: 1"),
+    gitlab_line("ERROR: Job failed: exit code 1"),
+)
+OFFLINE_OK_TRACE = build_log(
+    gitlab_line("[SPEC START] test/cypress/integration/offline/offline-pro.cy.js"),
+    gitlab_line("[SPEC END]   test/cypress/integration/offline/offline-pro.cy.js | d: 1m | ✔ PASSED"),
+)
+PARENT_JOBS = [
+    {"id": 10, "name": "cypress-priority 1/6", "status": "success", "created_at": "2026-09-24T14:00:00Z"},
+]
+BRIDGES = [
+    {"name": "cypress-offline-node-1", "downstream_pipeline": {"id": 71}},
+    {"name": "cypress-offline-node-3", "downstream_pipeline": {"id": 73}},
+    {"name": "cypress-offline-node-5", "downstream_pipeline": {"id": 75}},
+]
+CHILD_JOBS = {
+    71: [{"id": 711, "name": "cypress-offline-child", "status": "failed", "created_at": "2026-09-24T15:00:00Z"}],
+    73: [{"id": 731, "name": "cypress-offline-child-3: [pair]", "status": "failed", "created_at": "2026-09-24T15:00:01Z"},
+         {"id": 732, "name": "cypress-offline-child-3: [solo]", "status": "failed", "created_at": "2026-09-24T15:00:02Z"}],
+    75: [{"id": 751, "name": "cypress-offline-child", "status": "success", "created_at": "2026-09-24T15:00:03Z"}],
+}
+OFFLINE_TRACES = {10: "", 711: ABORTED_TRACE, 731: ABORTED_TRACE, 732: ABORTED_TRACE, 751: OFFLINE_OK_TRACE}
+PLANNED = {
+    ("1", ""): ["test/cypress/integration/offline/offline-floristics.cy.js"],
+    ("3", "pair"): ["test/cypress/integration/offline/a.cy.js", "test/cypress/integration/offline/b.cy.js"],
+    ("3", "solo"): [],  # table lookup failed -> must still surface the job
+}
+
+
+class NoSpecsRanTests(unittest.TestCase):
+    """A failed Cypress job that never reached its first spec must still show up.
+
+    Regression: pipeline 2879264052 -- 7 offline child jobs died on "Cypress
+    verification timed out." before any [SPEC START]; the report listed zero
+    offline failures because rows were only ever created from spec markers.
+    """
+
+    def run_main(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+
+        def all_jobs(project, pid):
+            return PARENT_JOBS if str(pid) == "555" else CHILD_JOBS[int(pid)]
+
+        with patch.object(sys, "argv", ["pipeline_failed_specs.py", "555"]), \
+             patch.object(pfs, "fetch_all_jobs", all_jobs), \
+             patch.object(pfs, "fetch_bridges", lambda p, pid: BRIDGES), \
+             patch.object(pfs, "fetch_job_trace", lambda p, jid: OFFLINE_TRACES[jid]), \
+             patch.object(pfs, "fetch_pipeline_sha", lambda p, pid: "sha1"), \
+             patch.object(pfs, "planned_offline_specs",
+                          lambda proj, sha, node, group: PLANNED[(node, group)]), \
+             patch.object(pfs, "CYPRESS_INTEGRATION_DIR", None):
+            cwd = os.getcwd()
+            os.chdir(tmp)
+            try:
+                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                    pfs.main()
+            finally:
+                os.chdir(cwd)
+        tmp = Path(tmp)
+        with open(tmp / "failed_specs_unique_555.csv", newline="") as fh:
+            rows = {r["Failed spec"]: r for r in csv.DictReader(fh)}
+        sidecar = json.loads((tmp / "spec_runs_555.json").read_text())
+        return rows, sidecar
+
+    def test_planned_specs_become_failed_rows(self):
+        rows, _ = self.run_main()
+        for spec in ("offline-floristics.cy.js", "a.cy.js", "b.cy.js"):
+            self.assertIn(spec, rows)
+            self.assertEqual(rows[spec]["Note"], "NO SPECS RAN: Cypress verification timed out.")
+            self.assertEqual(rows[spec]["Passed on retry"], "no")
+        self.assertTrue(rows["a.cy.js"]["first_job_url"].endswith("/jobs/731"))
+
+    def test_unresolvable_job_still_gets_a_row(self):
+        rows, _ = self.run_main()
+        key = "cypress-offline-child-3: [solo] node-3 (no specs ran)"
+        self.assertIn(key, rows)
+        self.assertTrue(rows[key]["Note"].startswith("NO SPECS RAN"))
+        self.assertTrue(rows[key]["first_job_url"].endswith("/jobs/732"))
+
+    def test_sidecar_marks_not_run_with_node(self):
+        _, sidecar = self.run_main()
+        run = sidecar["offline-floristics.cy.js"]["runs"][0]
+        self.assertEqual(run["status"], "NOT_RUN")
+        self.assertEqual(run["node"], "1")
+        self.assertEqual(run["abort_reason"], "Cypress verification timed out.")
+
+    def test_passing_offline_spec_is_not_a_failure(self):
+        rows, sidecar = self.run_main()
+        self.assertNotIn("offline-pro.cy.js", rows)
+        self.assertEqual(sidecar["offline-pro.cy.js"]["runs"][0]["status"], "PASSED")
+
 
 if __name__ == "__main__":
     unittest.main()

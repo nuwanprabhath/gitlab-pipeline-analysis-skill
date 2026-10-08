@@ -193,6 +193,13 @@ class NormalizeSpecTests(unittest.TestCase):
         )
         self.assertEqual(cnf.normalize_spec("a.cy.js (setup) [setup]"), "a.cy.js")
 
+
+    def test_strips_offline_marker_and_node_bracket(self):
+        self.assertEqual(cnf.normalize_spec("offline-soils.cy.js (offline)[node-3]"),
+                         "offline-soils.cy.js")
+        self.assertEqual(cnf.normalize_spec("offline-soils.cy.js (offline)[offline]"),
+                         "offline-soils.cy.js")
+
     def test_leaves_bare_and_unrelated_names_alone(self):
         self.assertEqual(cnf.normalize_spec("a.cy.js"), "a.cy.js")
         self.assertEqual(cnf.normalize_spec(" cover+floristics.cy.js "),

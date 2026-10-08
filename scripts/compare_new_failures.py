@@ -71,12 +71,15 @@ def find_previous_unique_csv(current_path):
 
 
 # Exported sheets decorate the spec name for display: a stage marker
-# `(priority)`/`(setup)` and/or a shard bracket `[run 3/8]`, `[priority 2/6]`,
-# `[setup]`. Those are presentation only — and the shard a spec lands in changes
-# between runs — so both sides of the comparison are matched on the bare spec
-# name. Without this, reading a previous run's .xlsx marks every spec "new".
-_SHARD_BRACKET_RE = re.compile(r"\s*\[(?:(?:run|priority)\s+\d+\s*/\s*\d+|setup)\]$")
-_STAGE_SUFFIX_RE = re.compile(r"\s*\((?:priority|setup)\)$")
+# `(priority)`/`(setup)`/`(offline)` and/or a shard bracket `[run 3/8]`,
+# `[priority 2/6]`, `[setup]`, `[node-3]` (offline suite, no leading space), or
+# `[offline]`. Those are presentation only — and the shard a spec lands in
+# changes between runs — so both sides of the comparison are matched on the bare
+# spec name. Without this, reading a previous run's .xlsx marks every spec "new".
+_SHARD_BRACKET_RE = re.compile(
+    r"\s*\[(?:(?:run|priority)\s+\d+\s*/\s*\d+|node-\d+|setup|offline)\]$"
+)
+_STAGE_SUFFIX_RE = re.compile(r"\s*\((?:priority|setup|offline)\)$")
 
 
 def normalize_spec(name):

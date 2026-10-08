@@ -9,6 +9,7 @@ Formatting applied automatically, driven by which columns are present:
   - Any column whose header contains "url" is rendered as a clickable hyperlink.
   - Cell background RED when `bug_likelihood_(AI)` is HIGH, or `New failure`
     is yes (these are the specs worth re-running locally first).
+  - `Note` cell RED for `JOB CRASHED` and `NO SPECS RAN: ...` (no real result).
   - Whole row background GREEN when `Passed on retry` starts with "yes"
     (flaky — passed on a later attempt). Red cells win over green.
 
@@ -69,6 +70,13 @@ def _passed_on_retry_url(retry_value, sample_job_url):
     if not m or not sample_job_url or "/jobs/" not in sample_job_url:
         return ""
     return _JOB_NUM_RE.sub(f"/jobs/{m.group(1)}", sample_job_url, count=1)
+
+
+# Attempt statuses shown as failed: the spec failed, its job crashed mid-spec
+# (MISSING), or the job died before starting any spec (NOT_RUN).
+FAILED_STATUSES = ("FAILED", "MISSING", "NOT_RUN")
+# Note values rendered red: both mean the spec has no real result.
+_RED_NOTE_PREFIXES = ("JOB CRASHED", "NO SPECS RAN")
 
 
 def _run_at(runs, idx):
@@ -191,7 +199,7 @@ def build_sheet(header, data, sheet_name, cause_jobs=None, spec_runs=None):
             elif i in job_col and value.startswith("http"):
                 run = _run_at(runs, job_col[i])
                 num = str(run["job_id"]) if run else _job_num(value)
-                failed = run is not None and run["status"] in ("FAILED", "MISSING")
+                failed = run is not None and run["status"] in FAILED_STATUSES
                 text = f"{num} ({run['job_name']})" if (is_all_specs and run) else num
                 if failed and num == cause_job and not is_all_specs:
                     style = xlsx.STYLE_LINK_ORANGE_BOLD  # the failure-cause job (failed-specs sheet only)
@@ -207,11 +215,11 @@ def build_sheet(header, data, sheet_name, cause_jobs=None, spec_runs=None):
             elif i in cyp_col and value.startswith("http"):
                 run = _run_at(runs, cyp_col[i])
                 num = str(run["job_id"]) if run else "cypress"
-                failed = run is not None and run["status"] in ("FAILED", "MISSING")
+                failed = run is not None and run["status"] in FAILED_STATUSES
                 style = (xlsx.STYLE_LINK_RED if failed
                          else xlsx.STYLE_LINK_GREEN if row_green else xlsx.STYLE_LINK)
                 cells.append(xlsx.Cell(value, style, hyperlink=True, display=num))
-            elif i == note_idx and value == "JOB CRASHED":
+            elif i == note_idx and value.startswith(_RED_NOTE_PREFIXES):
                 cells.append(xlsx.Cell(value, xlsx.STYLE_RED))
             elif (
                 (likelihood_idx is not None and i == likelihood_idx and value.upper() == "HIGH")

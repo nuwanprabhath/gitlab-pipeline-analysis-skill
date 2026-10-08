@@ -21,6 +21,12 @@ Outputs JSON (default: failures_raw_<pipeline>.json):
 `error_kind` is a deterministic anti-bias hint: `value-mismatch` / `app-error`
 mean the app produced wrong output/state (a real-bug signal — never a Cypress
 glitch), `element-timeout` is the only kind eligible for the glitch/LOW bucket.
+`job-aborted` means the job failed before its first spec started (e.g.
+"Cypress verification timed out."): the spec never ran, so there's no test
+result, only the CI/infra reason.
+
+Jobs in downstream child pipelines (the offline suite) are included, keyed by
+offline node so same-named child jobs aren't mistaken for retries of each other.
 
 `sha` is the commit the pipeline ran against — use it to read the spec code
 (the repo is public on GitLab), and `first_error_spec_line` is the spec-file
@@ -42,6 +48,7 @@ from collections import defaultdict, OrderedDict
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import pipeline_failed_specs as pfs  # noqa: E402
 from pipeline_failed_specs import is_cypress_job  # noqa: E402
 
 DEFAULT_PROJECT = "ternandsparrow/paratoo-fdcp"
@@ -146,7 +153,8 @@ def clean(line):
 
 # Strength ordering of error kinds — used to pick, across a job's retries, the
 # attempt that exposes the real bug rather than whichever failed last.
-KIND_RANK = {"value-mismatch": 3, "app-error": 3, "element-timeout": 1, "other": 0}
+KIND_RANK = {"value-mismatch": 3, "app-error": 3, "element-timeout": 1, "other": 0,
+             "job-aborted": 0}
 
 
 def cypress_job_attempts(project, pipeline_id):
@@ -157,6 +165,13 @@ def cypress_job_attempts(project, pipeline_id):
     covers exactly the jobs the sheet was built from; when the two filters
     disagreed, the extra specs reached the sheet but never got a
     failure_cause and showed up as UNCLASSIFIED.
+
+    Also follows bridges into child pipelines (the offline suite runs there, as
+    `cypress-offline-node-N` → `cypress-offline-child`). Child jobs are keyed
+    `<name> [node-N]` and tagged `_offline_node`: nodes 1/2/4 all run a job
+    named `cypress-offline-child`, and grouping by name alone would treat them
+    as retries of one another. Retried bridges are included (each re-run
+    triggers a new child pipeline), so a re-run node's attempts share one key.
     """
     enc = urllib.parse.quote(project, safe="")
     path = f"projects/{enc}/pipelines/{pipeline_id}/jobs?per_page=100&include_retried=true"
@@ -165,6 +180,21 @@ def cypress_job_attempts(project, pipeline_id):
     for j in jobs:
         if is_cypress_job(j["name"]):
             by_name[j["name"]].append(j)
+    try:
+        bridges = json.loads(glab(f"projects/{enc}/pipelines/{pipeline_id}/bridges?per_page=100&include_retried=true"))
+    except (SystemExit, ValueError):
+        bridges = []
+    for bridge in bridges if isinstance(bridges, list) else []:
+        child_id = (bridge.get("downstream_pipeline") or {}).get("id")
+        if not child_id:
+            continue
+        m = re.search(r"node-?(\d+)", bridge.get("name", ""), re.I)
+        node = m.group(1) if m else ""
+        child_path = f"projects/{enc}/pipelines/{child_id}/jobs?per_page=100&include_retried=true"
+        for j in json.loads(glab(child_path)):
+            if is_cypress_job(j["name"]):
+                j = dict(j, _offline_node=node)
+                by_name[f"{j['name']}{' [node-' + node + ']' if node else ''}"].append(j)
     for name in by_name:
         by_name[name].sort(key=lambda x: x["created_at"])
     return by_name
@@ -258,6 +288,36 @@ def parse_spec_failures(trace, job_id, job_name):
     return data
 
 
+def started_any_spec(trace):
+    """True if the trace shows any spec starting, via the CI's `[SPEC START]`
+    marker or Cypress's own `Running: <spec>` header."""
+    return any(SPEC_START_RE.search(ln) or RUNNING_RE.search(ln)
+               for ln in (clean(x) for x in trace.splitlines()))
+
+
+def aborted_job_records(trace, job, project, sha):
+    """Records for a failed job that never started a spec. One per planned spec
+    when the offline shard table resolves (same keys as the sheet), otherwise a
+    single `<job> (no specs ran)` record. error_kind `job-aborted`."""
+    reason = pfs.detect_job_abort(trace)
+    planned = []
+    if job.get("_offline_node"):
+        planned = pfs.planned_offline_specs(
+            project, sha, job["_offline_node"], pfs.spec_group_from_job_name(job["name"])
+        )
+    keys = [(p.rsplit("/", 1)[-1], p) for p in planned] or [(pfs.no_specs_key(job), None)]
+    data = OrderedDict()
+    for spec, path in keys:
+        data[spec] = {
+            "spec": spec, "spec_path": path, "job_id": job["id"], "job_name": job["name"],
+            "first_test": None, "first_error": reason, "first_error_spec_line": None,
+            "first_error_frames": [], "error_kind": "job-aborted", "bug_signal_error": "",
+            "cypress_run_url": parse_cypress_run_url(trace), "passed_on_retry": False,
+            "signatures": [reason],
+        }
+    return data
+
+
 def fetch_pipeline_info(project, pipeline_id):
     """Return {sha, web_url} for the pipeline (empty strings on failure)."""
     enc = urllib.parse.quote(project, safe="")
@@ -287,6 +347,7 @@ def main():
     sys.stderr.write(f"Fetching cypress job attempts for pipeline {pid}...\n")
     by_name = cypress_job_attempts(args.project, pid)
     enc = urllib.parse.quote(args.project, safe="")
+    pipeline_info = fetch_pipeline_info(args.project, pid)
 
     merged = OrderedDict()
     for name, attempts in by_name.items():
@@ -299,9 +360,12 @@ def main():
         parsed = {}
         for a in failed_attempts:
             sys.stderr.write(f"  parsing {a['id']} ({name})...\n")
-            parsed[a["id"]] = parse_spec_failures(
-                glab(f"projects/{enc}/jobs/{a['id']}/trace"), a["id"], name
-            )
+            trace = glab(f"projects/{enc}/jobs/{a['id']}/trace")
+            if started_any_spec(trace):
+                parsed[a["id"]] = parse_spec_failures(trace, a["id"], name)
+            else:
+                # Died before its first spec: no test output to parse.
+                parsed[a["id"]] = aborted_job_records(trace, a, args.project, pipeline_info["sha"])
         latest_failed = parsed.get(latest["id"], {}) if latest["status"] == "failed" else {}
 
         # 1) Specs still failing in the latest attempt = hard failures. A flaky
@@ -335,7 +399,6 @@ def main():
                 rec["passed_on_retry"] = True
                 merged[spec] = rec
 
-    pipeline_info = fetch_pipeline_info(args.project, pid)
     out = {
         "pipeline_id": pid,
         "project": args.project,

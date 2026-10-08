@@ -22,6 +22,10 @@ This list is meant to grow — add recurring signatures your team sees.
    - **`element-timeout`** (`never found`, `hidden from view`, dropdown races,
      stepper `continuously found`) → the ONLY kind eligible for the
      glitch/LOW bucket, and only when the captured error genuinely is that.
+   - **`job-aborted`** (`Note: NO SPECS RAN`, e.g. `Cypress verification timed
+     out.`) → the job died before the spec started. No test result exists, so
+     it's neither a bug nor a glitch: label it CI/infra `not run`, LOW, and
+     cluster all specs sharing the abort reason as one incident.
 
    A `value-mismatch` or `app-error` spec that you're tempted to call a
    dropdown/overlay glitch is the classic bug-masking mistake — stop and read

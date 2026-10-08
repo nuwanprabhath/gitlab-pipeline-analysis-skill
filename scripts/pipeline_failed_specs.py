@@ -10,7 +10,10 @@ trace's `[SPEC START]`/`[SPEC END]` markers for per-spec pass/fail, and writes:
   - failed_specs_unique_<pid>.csv  failed specs, classification columns blank
   - spec_runs_<pid>.json       sidecar with per-attempt status (for colouring)
 A spec that started but never got an `[SPEC END]` (crash/timeout/OOM) is marked
-Note = "JOB CRASHED".
+Note = "JOB CRASHED". A failed Cypress job that never reached its first spec
+(e.g. "Cypress verification timed out.") has no markers at all; its planned
+specs are recovered from the offline shard table where possible and marked
+Note = "NO SPECS RAN: <reason>", otherwise the job itself gets a row.
 
 Usage:
   ./pipeline_failed_specs.py <pipeline_id_or_url> [-o ALL_SPECS.csv] [-u UNIQUE.csv] [-p PROJECT]
@@ -22,8 +25,10 @@ import csv
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 import urllib.parse
 from collections import defaultdict
 from pathlib import Path
@@ -72,6 +77,110 @@ SPEC_EVENT_RE = re.compile(
 # Cypress Cloud run URL, printed once near the top of a recorded run's trace.
 CYPRESS_RUN_URL_RE = re.compile(r"Run URL:\s*(https?://\S*?cypress\.io/\S+)")
 MISSING_OUTPUT_NOTE = "JOB CRASHED"
+NO_SPECS_NOTE = "NO SPECS RAN"
+
+# Why a Cypress job died before its first `[SPEC START]`, most specific first.
+# The last pattern is GitLab's own footer, so any failed job has *some* reason.
+_JOB_ABORT_RES = [
+    re.compile(r"Cypress verification timed out\.?"),
+    re.compile(r"Cypress failed to start[^\n]*"),
+    re.compile(r"The cypress npm package is installed, but the Cypress binary is missing[^\n]*"),
+    re.compile(r"Your system is missing the dependency[^\n]*"),
+    re.compile(r"ERROR: Unknown CYPRESS_JOB_TYPE[^\n]*"),
+    re.compile(r"ERROR: Job failed: [^\n]*"),
+]
+NO_MARKERS_REASON = "job failed before any spec started (no [SPEC START] markers)"
+
+
+def detect_job_abort(log):
+    """Return a one-line reason a Cypress job failed without running a spec."""
+    log = clean_log(log)
+    for rx in _JOB_ABORT_RES:
+        m = rx.search(log)
+        if m:
+            return m.group(0).strip()
+    return NO_MARKERS_REASON
+
+
+_SPEC_GROUP_RE = re.compile(r":\s*\[([^\]]+)\]\s*$")
+
+
+def spec_group_from_job_name(name):
+    """`cypress-offline-child-3: [drones]` -> 'drones' (GitLab parallel:matrix
+    suffix, which the CI passes to the shard script as SPEC_GROUP)."""
+    m = _SPEC_GROUP_RE.search(name or "")
+    return m.group(1) if m else ""
+
+
+# The offline suite's shard table is code, not something the trace prints: the
+# job runs `node scripts/cypress-parallel-offline.js --stdout` and only logs
+# "Running N offline specs". Evaluating the same function at the pipeline's
+# commit recovers which specs a job that never started was meant to run.
+OFFLINE_SHARD_SCRIPT = "paratoo-webapp/scripts/cypress-parallel-offline.js"
+_PLANNED_CACHE = {}
+_NODE_EVAL = (
+    "const m = require(process.argv[1]);"
+    "const out = m.sortOfflineSpecs(Number(process.argv[2]), process.argv[3] || '');"
+    "process.stdout.write(JSON.stringify(out));"
+)
+
+
+def fetch_repo_file(project, path, ref):
+    project_enc = urllib.parse.quote(project, safe="")
+    path_enc = urllib.parse.quote(path, safe="")
+    return glab(f"projects/{project_enc}/repository/files/{path_enc}/raw?ref={ref}")
+
+
+def fetch_pipeline_sha(project, pipeline_id):
+    project_enc = urllib.parse.quote(project, safe="")
+    try:
+        return json.loads(glab(f"projects/{project_enc}/pipelines/{pipeline_id}")).get("sha", "")
+    except (subprocess.CalledProcessError, ValueError):
+        return ""
+
+
+def planned_offline_specs(project, sha, node, spec_group):
+    """Repo-relative spec paths an offline node/group was meant to run, or []
+    when that can't be determined (no node, no `node` binary, file missing,
+    script throws). Never raises: this only enriches the report."""
+    key = (project, sha, str(node), spec_group)
+    if key in _PLANNED_CACHE:
+        return _PLANNED_CACHE[key]
+    result = []
+    try:
+        if node and sha and shutil.which("node"):
+            src = fetch_repo_file(project, OFFLINE_SHARD_SCRIPT, sha)
+            with tempfile.TemporaryDirectory() as tmp:
+                script = Path(tmp) / "cypress-parallel-offline.js"
+                script.write_text(src)
+                out = subprocess.run(
+                    ["node", "-e", _NODE_EVAL, str(script), str(node), spec_group],
+                    capture_output=True, text=True, timeout=30,
+                )
+            if out.returncode == 0:
+                result = [
+                    re.sub(r"^\./", "", p) for p in json.loads(out.stdout)
+                    if isinstance(p, str) and p.endswith((".cy.js", ".cy.ts"))
+                ]
+            else:
+                lines = out.stderr.strip().splitlines()
+                err = next((ln for ln in lines if re.match(r"\s*\w*Error: ", ln)), lines[-1] if lines else "")
+                sys.stderr.write(
+                    f"  could not evaluate {OFFLINE_SHARD_SCRIPT} for node {node}"
+                    f"{' [' + spec_group + ']' if spec_group else ''}: {err.strip()}\n"
+                )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError, ValueError) as exc:
+        sys.stderr.write(f"  could not resolve planned offline specs: {exc}\n")
+    _PLANNED_CACHE[key] = result
+    return result
+
+
+def no_specs_key(job):
+    """Row key for a job that ran no spec and whose planned specs are unknown.
+    Includes the offline node: nodes 1/2/4 share the job name
+    `cypress-offline-child`, and must not collapse into one row."""
+    node = job.get("_offline_node", "")
+    return f"{job['name']}{' node-' + node if node else ''} (no specs ran)"
 
 
 def parse_cypress_run_url(log):
@@ -155,11 +264,16 @@ def fetch_bridges(project, pipeline_id):
     pipeline. Some Cypress suites run in child pipelines (e.g. the offline suite
     runs as `cypress-offline-node-N` bridges → child pipelines whose
     `cypress-offline-child` job holds the specs), so those jobs are NOT in the
-    parent pipeline's own job list. Degrades to [] on older GitLab / no access."""
+    parent pipeline's own job list. Includes retried bridges: re-running a
+    bridge triggers a NEW child pipeline and hides the old bridge (and its
+    failed child) from the default listing, so without include_retried a
+    failure that passed on a manual re-run vanishes from the report.
+    Degrades to [] on older GitLab / no access."""
     project_enc = urllib.parse.quote(project, safe="")
     try:
         return glab_paginated(
-            f"projects/{project_enc}/pipelines/{pipeline_id}/bridges?per_page=100"
+            f"projects/{project_enc}/pipelines/{pipeline_id}/bridges"
+            f"?per_page=100&include_retried=true"
         )
     except subprocess.CalledProcessError:
         return []
@@ -333,32 +447,59 @@ def main():
     # the spec appeared in (via [SPEC START]/[SPEC END]) with its outcome.
     spec_runs = defaultdict(list)
     known_spec_paths = {}
+    no_spec_jobs = []
+    sha = None
     for job in cypress_jobs:
         sys.stderr.write(f"  job {job['id']} ({job['name']})...\n")
         trace = fetch_job_trace(args.project, job["id"])
         order, status = parse_spec_events(trace)
         cyurl = parse_cypress_run_url(trace)
-        for full in order:
-            base = os.path.basename(full)
-            known_spec_paths.setdefault(base, full)
+
+        def add_run(base, run_status, **extra):
             spec_runs[base].append({
                 "job_id": job["id"],
                 "job_name": job["name"],
                 "stage": job.get("stage", ""),
                 # parallel node index for child-pipeline (offline) jobs; "" otherwise
                 "node": job.get("_offline_node", ""),
-                "status": status.get(full) or "MISSING",
+                "status": run_status,
                 "created_at": job["created_at"],
                 "job_url": job_url(job["id"]),
                 "cypress_url": cyurl,
+                **extra,
             })
+
+        for full in order:
+            base = os.path.basename(full)
+            known_spec_paths.setdefault(base, full)
+            add_run(base, status.get(full) or "MISSING")
+
+        # A failed job with no spec markers never started a spec (Cypress
+        # binary verification timeout, install failure, ...). Without this it
+        # contributes nothing and its failure vanishes from the report.
+        if not order and job.get("status") == "failed":
+            reason = detect_job_abort(trace)
+            planned = []
+            if job.get("_offline_node"):
+                if sha is None:
+                    sha = fetch_pipeline_sha(args.project, pipeline_id)
+                planned = planned_offline_specs(
+                    args.project, sha, job["_offline_node"], spec_group_from_job_name(job["name"])
+                )
+            for full in planned:
+                base = os.path.basename(full)
+                known_spec_paths.setdefault(base, full)
+                add_run(base, "NOT_RUN", abort_reason=reason)
+            if not planned:
+                add_run(no_specs_key(job), "NOT_RUN", abort_reason=reason)
+            no_spec_jobs.append((job, reason, len(planned)))
     for base in spec_runs:
         spec_runs[base].sort(key=lambda r: r["created_at"])
 
     all_specs = sorted(spec_runs)
 
     def is_fail(status):
-        return status in ("FAILED", "MISSING")
+        return status in ("FAILED", "MISSING", "NOT_RUN")
 
     def passed_on_retry(runs):
         """Return (attempt_number, passed_run) if the spec failed then later
@@ -401,7 +542,13 @@ def main():
     for spec in failed_specs:
         runs = spec_runs[spec]
         por = passed_on_retry(runs)
-        note = MISSING_OUTPUT_NOTE if any(r["status"] == "MISSING" for r in runs) else ""
+        not_run = next((r for r in runs if r["status"] == "NOT_RUN"), None)
+        if any(r["status"] == "MISSING" for r in runs):
+            note = MISSING_OUTPUT_NOTE
+        elif not_run:
+            note = f"{NO_SPECS_NOTE}: {not_run.get('abort_reason') or NO_MARKERS_REASON}"
+        else:
+            note = ""
         unique_rows.append({
             "Failed spec": spec,
             "Passed on retry": f"yes ({por[0]}) (#{por[1]['job_id']})" if por else "no",
@@ -431,12 +578,23 @@ def main():
     crashed = [s for s in failed_specs if any(r["status"] == "MISSING" for r in spec_runs[s])]
     if crashed:
         sys.stderr.write(f"{len(crashed)} spec(s) with a crashed job (JOB CRASHED): {', '.join(crashed)}\n")
+    if no_spec_jobs:
+        sys.stderr.write(
+            f"\n{len(no_spec_jobs)} failed cypress job(s) ran NO specs ({NO_SPECS_NOTE}):\n"
+        )
+        for job, reason, n in no_spec_jobs:
+            what = f"{n} planned spec(s) marked NOT_RUN" if n else "planned specs unknown, job row added"
+            sys.stderr.write(f"  {job['id']} {job['name']}: {reason} -- {what}\n")
 
     if not failed_specs:
         sys.stderr.write("\nNo failed Cypress specs to re-run.\n")
         return
 
-    resolved, unresolved = resolve_spec_paths(failed_specs, known_paths=known_spec_paths)
+    # `... (no specs ran)` job rows aren't spec files, so they can't be re-run.
+    rerunnable = [s for s in failed_specs if s.endswith((".cy.js", ".cy.ts"))]
+    if not rerunnable:
+        return
+    resolved, unresolved = resolve_spec_paths(rerunnable, known_paths=known_spec_paths)
     cmd = build_cypress_command(resolved)
     sys.stderr.write(
         f"\nTo re-run the {len(resolved)} failed spec(s), from paratoo-webapp/:\n\n"

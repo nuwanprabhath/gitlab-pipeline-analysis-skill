@@ -168,6 +168,27 @@ class ExportXlsxTests(unittest.TestCase):
         cells = parse_styles(out)
         self.assertEqual(cells["a.cy.js"]["first_cypress_url"][1], str(xlsx.STYLE_LINK_RED))
 
+    def test_not_run_attempt_and_note_are_red(self):
+        # A job that died before its first spec (NO SPECS RAN) is a failed
+        # attempt: its job cell and the note must be red like a crash.
+        self.write([mk("offline-drones.cy.js", note="NO SPECS RAN: Cypress verification timed out.",
+                       first=JOB + "731")])
+        sr = {"offline-drones.cy.js": [{"job_id": "731", "job_name": "cypress-offline-child-3: [drones]",
+                                        "status": "NOT_RUN", "node": "3"}]}
+        cells = parse_styles(self.export(spec_runs=sr))
+        row = cells["offline-drones.cy.js"]
+        self.assertEqual(row["first_job_url"][1], str(xlsx.STYLE_LINK_RED))
+        self.assertEqual(row["Note"][1], str(xlsx.STYLE_RED))
+
+    def test_not_run_spec_is_labelled_offline_node(self):
+        self.write([mk("offline-drones.cy.js", note="NO SPECS RAN: x", first=JOB + "731")])
+        sr = {"offline-drones.cy.js": [{"job_id": "731", "job_name": "cypress-offline-child-3: [drones]",
+                                        "status": "NOT_RUN", "node": "3"}]}
+        out = self.export(spec_runs=sr)
+        with zipfile.ZipFile(out) as z:
+            sheet = z.read("xl/worksheets/sheet1.xml").decode()
+        self.assertIn("offline-drones.cy.js (offline)[node-3]", sheet)
+
     def test_every_url_cell_is_a_clickable_hyperlink(self):
         # Guard: any first/second job or cypress cell holding a URL MUST render
         # as a HYPERLINK formula, never plain text. (Regression guard for the
