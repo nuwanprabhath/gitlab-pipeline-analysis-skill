@@ -49,7 +49,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import pipeline_failed_specs as pfs  # noqa: E402
-from pipeline_failed_specs import is_cypress_job  # noqa: E402
+from pipeline_failed_specs import is_cypress_job, is_cypress_child_job  # noqa: E402
 
 DEFAULT_PROJECT = "ternandsparrow/paratoo-fdcp"
 
@@ -167,7 +167,8 @@ def cypress_job_attempts(project, pipeline_id):
     failure_cause and showed up as UNCLASSIFIED.
 
     Also follows bridges into child pipelines (the offline suite runs there, as
-    `cypress-offline-node-N` → `cypress-offline-child`). Child jobs are keyed
+    `cypress-offline-node-N` → `cypress-offline-child`, or node 1's
+    `offline-floristics-*` chain, kept by stage). Child jobs are keyed
     `<name> [node-N]` and tagged `_offline_node`: nodes 1/2/4 all run a job
     named `cypress-offline-child`, and grouping by name alone would treat them
     as retries of one another. Retried bridges are included (each re-run
@@ -192,7 +193,7 @@ def cypress_job_attempts(project, pipeline_id):
         node = m.group(1) if m else ""
         child_path = f"projects/{enc}/pipelines/{child_id}/jobs?per_page=100&include_retried=true"
         for j in json.loads(glab(child_path)):
-            if is_cypress_job(j["name"]):
+            if is_cypress_child_job(j):
                 j = dict(j, _offline_node=node)
                 by_name[f"{j['name']}{' [node-' + node + ']' if node else ''}"].append(j)
     for name in by_name:
@@ -300,11 +301,7 @@ def aborted_job_records(trace, job, project, sha):
     when the offline shard table resolves (same keys as the sheet), otherwise a
     single `<job> (no specs ran)` record. error_kind `job-aborted`."""
     reason = pfs.detect_job_abort(trace)
-    planned = []
-    if job.get("_offline_node"):
-        planned = pfs.planned_offline_specs(
-            project, sha, job["_offline_node"], pfs.spec_group_from_job_name(job["name"])
-        )
+    planned = pfs.planned_specs_for_job(project, sha, job)
     keys = [(p.rsplit("/", 1)[-1], p) for p in planned] or [(pfs.no_specs_key(job), None)]
     data = OrderedDict()
     for spec, path in keys:

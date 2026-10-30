@@ -103,13 +103,20 @@ def detect_job_abort(log):
 
 
 _SPEC_GROUP_RE = re.compile(r":\s*\[([^\]]+)\]\s*$")
+_NODE_1_JOB_PREFIX = "offline-floristics-"
 
 
 def spec_group_from_job_name(name):
-    """`cypress-offline-child-3: [drones]` -> 'drones' (GitLab parallel:matrix
-    suffix, which the CI passes to the shard script as SPEC_GROUP)."""
+    """The SPEC_GROUP a CI offline job passes to the shard script:
+    `cypress-offline-child-3: [drones]` -> 'drones' (parallel:matrix suffix),
+    `offline-floristics-cover-fire` -> 'cover-fire' (node 1's chain jobs set
+    SPEC_GROUP to their name minus the prefix), else ''."""
     m = _SPEC_GROUP_RE.search(name or "")
-    return m.group(1) if m else ""
+    if m:
+        return m.group(1)
+    if (name or "").startswith(_NODE_1_JOB_PREFIX):
+        return name[len(_NODE_1_JOB_PREFIX):]
+    return ""
 
 
 # The offline suite's shard table is code, not something the trace prints: the
@@ -118,6 +125,8 @@ def spec_group_from_job_name(name):
 # commit recovers which specs a job that never started was meant to run.
 OFFLINE_SHARD_SCRIPT = "paratoo-webapp/scripts/cypress-parallel-offline.js"
 _PLANNED_CACHE = {}
+# The script reads CI_NODE_INDEX/SPEC_GROUP from the env (as in CI) and doesn't export sortOfflineSpecs.
+_EXPORT_SHARD_FN = "\nif (typeof sortOfflineSpecs === 'function') module.exports.sortOfflineSpecs = sortOfflineSpecs\n"
 _NODE_EVAL = (
     "const m = require(process.argv[1]);"
     "const out = m.sortOfflineSpecs(Number(process.argv[2]), process.argv[3] || '');"
@@ -152,10 +161,11 @@ def planned_offline_specs(project, sha, node, spec_group):
             src = fetch_repo_file(project, OFFLINE_SHARD_SCRIPT, sha)
             with tempfile.TemporaryDirectory() as tmp:
                 script = Path(tmp) / "cypress-parallel-offline.js"
-                script.write_text(src)
+                script.write_text(src + _EXPORT_SHARD_FN)
                 out = subprocess.run(
                     ["node", "-e", _NODE_EVAL, str(script), str(node), spec_group],
                     capture_output=True, text=True, timeout=30,
+                    env={**os.environ, "CI_NODE_INDEX": str(node), "SPEC_GROUP": spec_group},
                 )
             if out.returncode == 0:
                 result = [
@@ -173,6 +183,19 @@ def planned_offline_specs(project, sha, node, spec_group):
         sys.stderr.write(f"  could not resolve planned offline specs: {exc}\n")
     _PLANNED_CACHE[key] = result
     return result
+
+
+def planned_specs_for_job(project, sha, job):
+    """Planned specs for an offline child job, or [] for a parent job.
+    An empty group makes the shard script return its whole node, which is
+    only right for the one-job-per-node `cypress-offline-child`."""
+    node = job.get("_offline_node")
+    if not node:
+        return []
+    group = spec_group_from_job_name(job["name"])
+    if not group and job["name"] != "cypress-offline-child":
+        return []
+    return planned_offline_specs(project, sha, node, group)
 
 
 def no_specs_key(job):
@@ -203,6 +226,14 @@ def is_cypress_job(name):
     `[SPEC START]` markers contributes nothing. Under-matching loses failures.
     """
     return "cypress" in name.lower()
+
+
+def is_cypress_child_job(job):
+    """`is_cypress_job` for a child-pipeline job, also matching its stage:
+    offline node 1 runs as `offline-floristics-*` jobs in stage
+    `test-cypress-offline`, while the offline stack's deploy/teardown jobs sit
+    in their own stages and stay out."""
+    return is_cypress_job(job["name"]) or is_cypress_job(job.get("stage") or "")
 
 
 def glab(path):
@@ -263,11 +294,12 @@ def fetch_bridges(project, pipeline_id):
     """Trigger (bridge) jobs of a pipeline, each pointing at a downstream child
     pipeline. Some Cypress suites run in child pipelines (e.g. the offline suite
     runs as `cypress-offline-node-N` bridges → child pipelines whose
-    `cypress-offline-child` job holds the specs), so those jobs are NOT in the
-    parent pipeline's own job list. Includes retried bridges: re-running a
-    bridge triggers a NEW child pipeline and hides the old bridge (and its
-    failed child) from the default listing, so without include_retried a
-    failure that passed on a manual re-run vanishes from the report.
+    `cypress-offline-child*` / `offline-floristics-*` jobs hold the specs), so
+    those jobs are NOT in the parent pipeline's own job list. Includes retried
+    bridges: re-running a bridge triggers a NEW child pipeline and hides the
+    old bridge (and its failed child) from the default listing, so without
+    include_retried a failure that passed on a manual re-run vanishes from the
+    report.
     Degrades to [] on older GitLab / no access."""
     project_enc = urllib.parse.quote(project, safe="")
     try:
@@ -297,7 +329,7 @@ def gather_cypress_jobs(project, pipeline_id):
         m = _OFFLINE_NODE_RE.search(bridge.get("name", ""))
         node = m.group(1) if m else ""
         for j in fetch_all_jobs(project, child_id):
-            if is_cypress_job(j["name"]):
+            if is_cypress_child_job(j):
                 j = dict(j)
                 j["_offline_node"] = node
                 jobs.append(j)
@@ -479,13 +511,9 @@ def main():
         # contributes nothing and its failure vanishes from the report.
         if not order and job.get("status") == "failed":
             reason = detect_job_abort(trace)
-            planned = []
-            if job.get("_offline_node"):
-                if sha is None:
-                    sha = fetch_pipeline_sha(args.project, pipeline_id)
-                planned = planned_offline_specs(
-                    args.project, sha, job["_offline_node"], spec_group_from_job_name(job["name"])
-                )
+            if job.get("_offline_node") and sha is None:
+                sha = fetch_pipeline_sha(args.project, pipeline_id)
+            planned = planned_specs_for_job(args.project, sha, job)
             for full in planned:
                 base = os.path.basename(full)
                 known_spec_paths.setdefault(base, full)

@@ -18,3 +18,9 @@ def gitlab_line(text, ts=TS, token="01O"):
 
 def build_log(*lines):
     return "\n".join(lines) + "\n"
+
+
+# The seven specs offline node 1 runs, one per `offline-floristics-*` job.
+NODE_1_ALL_SPECS = [f"test/cypress/integration/offline/offline-floristics-{s}.cy.js" for s in (
+    "setup", "consumers-recruitment", "consumers-survivorship-online", "consumers-survivorship-offline",
+    "consumers-condition-basal", "consumers-cover-fire", "sync")]

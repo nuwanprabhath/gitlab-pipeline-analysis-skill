@@ -20,7 +20,7 @@ SCRIPTS_DIR = Path(__file__).resolve().parent.parent / "scripts"
 sys.path.insert(0, str(SCRIPTS_DIR))
 
 import extract_failures as ef  # noqa: E402
-from fixtures import gitlab_line, build_log  # noqa: E402
+from fixtures import gitlab_line, build_log, NODE_1_ALL_SPECS  # noqa: E402
 
 # foo.cy.js (job 1/8): older attempt fails at 8.2 with a deep-equal data
 # mismatch (real bug); newer attempt fails earlier at 2.1 with a cy.click
@@ -114,6 +114,10 @@ OFFLINE_ATTEMPTS = {
         {"id": 721, "name": "cypress-offline-child", "status": "failed",
          "created_at": "2026-09-24T15:00:00Z", "_offline_node": "2"},
     ],
+    "offline-floristics-cover-fire [node-1]": [
+        {"id": 741, "name": "offline-floristics-cover-fire", "status": "failed",
+         "created_at": "2026-10-28T10:02:00Z", "_offline_node": "1"},
+    ],
 }
 
 
@@ -126,7 +130,9 @@ class NoSpecsRanExtractTests(unittest.TestCase):
         out = Path(tmp) / "failures_raw_1.json"
         planned = {("3", "pair"): ["test/cypress/integration/offline/a.cy.js",
                                    "test/cypress/integration/offline/b.cy.js"],
-                   ("2", ""): []}
+                   ("2", ""): [],
+                   ("1", "cover-fire"): [NODE_1_ALL_SPECS[5]],
+                   ("1", ""): NODE_1_ALL_SPECS}
         with patch.object(sys, "argv", ["extract_failures.py", "555", "-o", str(out)]), \
              patch.object(ef, "cypress_job_attempts", lambda p, pid: OFFLINE_ATTEMPTS), \
              patch.object(ef, "glab", lambda path: ABORT_TRACE), \
@@ -147,6 +153,12 @@ class NoSpecsRanExtractTests(unittest.TestCase):
             self.assertEqual(rec["first_error"], "Cypress verification timed out.")
             self.assertEqual(rec["job_id"], 731)
             self.assertEqual(rec["spec_path"], f"test/cypress/integration/offline/{spec}")
+
+    def test_aborted_node_1_job_gets_only_its_spec(self):
+        specs = self.run_main()
+        node_1 = {s: r for s, r in specs.items() if r["job_id"] == 741}
+        self.assertEqual(list(node_1), ["offline-floristics-consumers-cover-fire.cy.js"])
+        self.assertEqual(node_1["offline-floristics-consumers-cover-fire.cy.js"]["error_kind"], "job-aborted")
 
     def test_unresolvable_job_uses_same_key_as_sheet(self):
         specs = self.run_main()
@@ -208,6 +220,31 @@ class CypressJobAttemptsChildPipelineTests(unittest.TestCase):
         with patch.object(ef, "glab", fake):
             got = ef.cypress_job_attempts("group/proj", "555")
         self.assertEqual([j["id"] for j in got["cypress-offline-child [node-1]"]], [710, 720])
+
+    def test_keeps_node_1_chain_jobs_by_stage(self):
+        def fake(path):
+            if "/pipelines/555/jobs" in path:
+                return json.dumps([])
+            if "/pipelines/555/bridges" in path:
+                return json.dumps([{"name": "cypress-offline-node-1", "downstream_pipeline": {"id": 66}}])
+            if "/pipelines/66/jobs" in path:
+                return json.dumps([
+                    {"id": 660, "name": "deploy-offline-stack", "stage": "deploy-offline-stack",
+                     "status": "success", "created_at": "2026-10-28T10:00:00Z"},
+                    {"id": 661, "name": "offline-floristics-setup", "stage": "test-cypress-offline",
+                     "status": "success", "created_at": "2026-10-28T10:01:00Z"},
+                    {"id": 662, "name": "offline-floristics-cover-fire", "stage": "test-cypress-offline",
+                     "status": "failed", "created_at": "2026-10-28T10:02:00Z"},
+                    {"id": 664, "name": "teardown-offline-stack", "stage": "teardown-offline-stack",
+                     "status": "success", "created_at": "2026-10-28T10:04:00Z"},
+                ])
+            raise AssertionError(path)
+
+        with patch.object(ef, "glab", fake):
+            got = ef.cypress_job_attempts("group/proj", "555")
+        self.assertEqual(set(got), {"offline-floristics-setup [node-1]",
+                                    "offline-floristics-cover-fire [node-1]"})
+        self.assertEqual(got["offline-floristics-cover-fire [node-1]"][0]["_offline_node"], "1")
 
 
 if __name__ == "__main__":

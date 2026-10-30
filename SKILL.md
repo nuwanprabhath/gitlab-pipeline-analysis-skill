@@ -8,7 +8,7 @@ description: >-
   clickable job links, then group failures by root cause and offer to open a
   GitLab issue for the dominant cluster. Use when asked to investigate, analyze,
   triage, or summarize CI / pipeline test failures, or to classify why specs failed.
-version: 2.3.0
+version: 2.3.1
 ---
 
 # GitLab Pipeline Failure Analysis
@@ -59,7 +59,8 @@ in step 7. Let `PID` be the pipeline id.
    Fetches every Cypress job attempt (jobs retry once, so max 2 attempts) —
    including jobs that run in downstream child pipelines, such as the offline
    suite (`cypress-offline-node-N` bridges → child pipelines whose
-   `cypress-offline-child` job holds the specs, including the child pipelines
+   `cypress-offline-child*` jobs, or node 1's `offline-floristics-*` chain,
+   hold the specs, including the child pipelines
    of bridges that were re-run, so a failure fixed by a manual re-run still
    shows as passed-on-retry) — parses each trace's
    `[SPEC START]`/`[SPEC END]` markers for per-spec pass/fail, and writes three
@@ -84,12 +85,15 @@ in step 7. Let `PID` be the pipeline id.
    that never started a single spec** (e.g. `Cypress verification timed out.`,
    binary/install failure), so the trace has no `[SPEC START]` markers. For
    offline child jobs the planned specs are recovered by evaluating
-   `sortOfflineSpecs(node, SPEC_GROUP)` from
-   `paratoo-webapp/scripts/cypress-parallel-offline.js` at the pipeline's
-   commit (needs `node` on PATH), and each gets a row. If that can't be
-   resolved, the job itself gets a row keyed `<job name> node-N (no specs
-   ran)`. The script prints a `ran NO specs` summary — always report these:
-   the spec didn't fail, it never got to run, so its coverage is missing.
+   `sortOfflineSpecs()` from `paratoo-webapp/scripts/cypress-parallel-offline.js`
+   at the pipeline's commit with `CI_NODE_INDEX` and `SPEC_GROUP` set as in CI
+   (needs `node` on PATH), and each gets a row. The group comes from the job
+   name: the `: [group]` matrix suffix, or the part after `offline-floristics-`.
+   If that can't be resolved, or an offline job other than
+   `cypress-offline-child` has no group, the job itself gets a row keyed
+   `<job name> node-N (no specs ran)`. The script prints a `ran NO specs`
+   summary — always report these: the spec didn't fail, it never got to run,
+   so its coverage is missing.
 
 3. **Flag newly-introduced failures (optional, only if a previous run exists).**
    Ask the script for the most recent prior unique CSV in the working folder:
@@ -337,7 +341,10 @@ produced during the run and removed in step 7.
 
 - Every job whose name contains `cypress` is parsed for specs (cypress-run,
   cypress-priority, cypress-setup, cypress-smoke-test, and the offline suite's
-  `cypress-offline-child` in child pipelines). A *successful* cypress job
+  `cypress-offline-child` in child pipelines). In child pipelines a job whose
+  stage contains `cypress` is parsed too, which covers offline node 1's
+  `offline-floristics-*` jobs (stage `test-cypress-offline`); the offline
+  stack's deploy/teardown jobs are not. A *successful* cypress job
   with no `[SPEC START]` markers contributes nothing; a *failed* one is
   reported as `NO SPECS RAN` (step 2), never dropped. Child (triggered)
   pipelines are followed via the parent's bridges, so offline specs are

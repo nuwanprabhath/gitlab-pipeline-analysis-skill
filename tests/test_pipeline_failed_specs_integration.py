@@ -20,7 +20,7 @@ SCRIPTS_DIR = Path(__file__).resolve().parent.parent / "scripts"
 sys.path.insert(0, str(SCRIPTS_DIR))
 
 import pipeline_failed_specs as pfs  # noqa: E402
-from fixtures import gitlab_line, build_log  # noqa: E402
+from fixtures import gitlab_line, build_log, NODE_1_ALL_SPECS  # noqa: E402
 
 RUN_A = "test/cypress/integration/run/a.cy.js"   # fails attempt 1, passes attempt 2 (flaky)
 RUN_B = "test/cypress/integration/run/b.cy.js"   # crashes attempt 1 (no [SPEC END])
@@ -290,6 +290,115 @@ class NoSpecsRanTests(unittest.TestCase):
         rows, sidecar = self.run_main()
         self.assertNotIn("offline-pro.cy.js", rows)
         self.assertEqual(sidecar["offline-pro.cy.js"]["runs"][0]["status"], "PASSED")
+
+
+COVER_FIRE = "test/cypress/integration/offline/offline-floristics-consumers-cover-fire.cy.js"
+SETUP = "test/cypress/integration/offline/offline-floristics-setup.cy.js"
+NODE_1_BRIDGES = [{"name": "cypress-offline-node-1", "downstream_pipeline": {"id": 66}}]
+NODE_1_CHILD_JOBS = [
+    {"id": 660, "name": "deploy-offline-stack", "stage": "deploy-offline-stack", "status": "success",
+     "created_at": "2026-10-28T10:00:00Z"},
+    {"id": 661, "name": "offline-floristics-setup", "stage": "test-cypress-offline", "status": "success",
+     "created_at": "2026-10-28T10:01:00Z"},
+    {"id": 662, "name": "offline-floristics-cover-fire", "stage": "test-cypress-offline", "status": "failed",
+     "created_at": "2026-10-28T10:02:00Z"},
+    {"id": 663, "name": "offline-floristics-sync", "stage": "test-cypress-offline", "status": "skipped",
+     "created_at": "2026-10-28T10:03:00Z"},
+    {"id": 664, "name": "teardown-offline-stack", "stage": "teardown-offline-stack", "status": "success",
+     "created_at": "2026-10-28T10:04:00Z"},
+]
+NODE_1_TRACES = {
+    660: "", 663: "", 664: "",
+    661: build_log(gitlab_line(f"[SPEC START] {SETUP}"),
+                   gitlab_line(f"[SPEC END]   {SETUP} | d: 1m | ✔ PASSED")),
+    662: build_log(gitlab_line(f"[SPEC START] {COVER_FIRE}"),
+                   gitlab_line(f"[SPEC END]   {COVER_FIRE} | d: 1m | ✖ FAILED")),
+}
+
+
+def node_1_all_jobs(project, pid):
+    return [] if str(pid) == "444" else NODE_1_CHILD_JOBS
+
+
+class Node1ChainTests(unittest.TestCase):
+    """Offline node 1 runs as a setup -> consumers -> sync chain of
+    `offline-floristics-*` jobs whose names don't contain `cypress`."""
+
+    def test_node_1_chain_jobs_are_collected(self):
+        with patch.object(pfs, "fetch_all_jobs", node_1_all_jobs), \
+             patch.object(pfs, "fetch_bridges", lambda p, pid: NODE_1_BRIDGES):
+            jobs = pfs.gather_cypress_jobs("proj", "444")
+        self.assertEqual([j["id"] for j in jobs], [661, 662, 663])
+        self.assertEqual({j["_offline_node"] for j in jobs}, {"1"})
+
+    def run_main(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        with patch.object(sys, "argv", ["pipeline_failed_specs.py", "444"]), \
+             patch.object(pfs, "fetch_all_jobs", node_1_all_jobs), \
+             patch.object(pfs, "fetch_bridges", lambda p, pid: NODE_1_BRIDGES), \
+             patch.object(pfs, "fetch_job_trace", lambda p, jid: NODE_1_TRACES[jid]), \
+             patch.object(pfs, "fetch_pipeline_sha", lambda p, pid: "sha1"), \
+             patch.object(pfs, "planned_offline_specs", lambda proj, sha, node, group: []), \
+             patch.object(pfs, "CYPRESS_INTEGRATION_DIR", None):
+            cwd = os.getcwd()
+            os.chdir(tmp)
+            try:
+                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                    pfs.main()
+            finally:
+                os.chdir(cwd)
+        tmp = Path(tmp)
+        with open(tmp / "failed_specs_unique_444.csv", newline="") as fh:
+            rows = {r["Failed spec"]: r for r in csv.DictReader(fh)}
+        return rows, json.loads((tmp / "spec_runs_444.json").read_text())
+
+    def test_failed_consumer_spec_is_reported_on_node_1(self):
+        rows, sidecar = self.run_main()
+        self.assertIn("offline-floristics-consumers-cover-fire.cy.js", rows)
+        self.assertTrue(rows["offline-floristics-consumers-cover-fire.cy.js"]["first_job_url"].endswith("/jobs/662"))
+        self.assertEqual(sidecar["offline-floristics-consumers-cover-fire.cy.js"]["runs"][0]["node"], "1")
+
+    def test_skipped_sync_contributes_nothing(self):
+        rows, sidecar = self.run_main()
+        self.assertNotIn("offline-floristics-sync.cy.js", rows)
+        self.assertNotIn("offline-floristics-sync.cy.js", sidecar)
+        self.assertEqual(sidecar["offline-floristics-setup.cy.js"]["runs"][0]["status"], "PASSED")
+
+
+NODE_1_ABORTED_JOBS = [
+    {"id": 672, "name": "offline-floristics-cover-fire", "stage": "test-cypress-offline", "status": "failed",
+     "created_at": "2026-10-28T10:02:00Z"},
+]
+NODE_1_PLANNED = {("1", "cover-fire"): [COVER_FIRE], ("1", ""): NODE_1_ALL_SPECS}
+
+
+class Node1AbortedJobTests(unittest.TestCase):
+    """An aborted node-1 job is reported against its own group's spec only."""
+
+    def test_aborted_consumer_reports_only_its_spec(self):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        with patch.object(sys, "argv", ["pipeline_failed_specs.py", "445"]), \
+             patch.object(pfs, "fetch_all_jobs",
+                          lambda p, pid: [] if str(pid) == "445" else NODE_1_ABORTED_JOBS), \
+             patch.object(pfs, "fetch_bridges", lambda p, pid: NODE_1_BRIDGES), \
+             patch.object(pfs, "fetch_job_trace", lambda p, jid: ABORTED_TRACE), \
+             patch.object(pfs, "fetch_pipeline_sha", lambda p, pid: "sha1"), \
+             patch.object(pfs, "planned_offline_specs",
+                          lambda proj, sha, node, group: NODE_1_PLANNED[(node, group)]), \
+             patch.object(pfs, "CYPRESS_INTEGRATION_DIR", None):
+            cwd = os.getcwd()
+            os.chdir(tmp)
+            try:
+                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                    pfs.main()
+            finally:
+                os.chdir(cwd)
+        with open(Path(tmp) / "failed_specs_unique_445.csv", newline="") as fh:
+            rows = {r["Failed spec"]: r for r in csv.DictReader(fh)}
+        self.assertEqual(list(rows), ["offline-floristics-consumers-cover-fire.cy.js"])
+        self.assertTrue(rows["offline-floristics-consumers-cover-fire.cy.js"]["Note"].startswith("NO SPECS RAN"))
 
 
 if __name__ == "__main__":

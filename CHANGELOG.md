@@ -5,6 +5,32 @@ All notable changes to this skill are documented here. Format follows
 [Semantic Versioning](https://semver.org/) and is tracked in the `version`
 field of [`SKILL.md`](SKILL.md)'s frontmatter.
 
+## [2.3.1] - 2026-10-30
+
+### Fixed
+- **Offline node 1 failures were missing.** paratoo-fdcp now runs offline
+  node 1 as a chain of `offline-floristics-*` child jobs (`setup`, five
+  consumers, `sync`). Their names don't contain `cypress`, so both
+  `pipeline_failed_specs.py` and `extract_failures.py` skipped them. In
+  pipeline 2966178222, the failed `offline-floristics-cover-fire` job
+  (17305941476) was absent and the report listed only `cypress-lint-gate`.
+  Child-pipeline jobs are now also kept when their stage contains `cypress`
+  (`test-cypress-offline`); the offline stack's deploy and teardown jobs stay
+  out.
+- **Aborted offline jobs never resolved to their planned specs.** The lookup
+  called `sortOfflineSpecs(node, group)` from
+  `paratoo-webapp/scripts/cypress-parallel-offline.js`, but the real script
+  never exported that function and reads `CI_NODE_INDEX` / `SPEC_GROUP` from
+  the environment. Every lookup failed with `m.sortOfflineSpecs is not a
+  function`, so an aborted offline job always fell back to one job-level
+  `NO SPECS RAN` row. The script is now evaluated with those variables set,
+  as in CI, and the tests include a copy of the real script.
+- **Node 1's spec group is read from the job name.** An aborted
+  `offline-floristics-<group>` job is reported against its own spec, not all
+  seven node-1 specs. An offline child job with no group, other than
+  `cypress-offline-child`, keeps the job-level row instead of a whole-node
+  guess.
+
 ## [2.3.0] - 2026-10-22
 
 ### Added

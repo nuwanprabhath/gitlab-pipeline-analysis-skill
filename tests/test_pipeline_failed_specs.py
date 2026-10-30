@@ -1,3 +1,4 @@
+import io
 import shutil
 import subprocess
 import sys
@@ -267,6 +268,12 @@ class SpecGroupFromJobNameTests(unittest.TestCase):
         self.assertEqual(pfs.spec_group_from_job_name("cypress-offline-child-3: [camera-soils]"),
                          "camera-soils")
 
+    def test_node_1_chain_job_name(self):
+        self.assertEqual(pfs.spec_group_from_job_name("offline-floristics-cover-fire"), "cover-fire")
+        self.assertEqual(pfs.spec_group_from_job_name("offline-floristics-survivorship-online"),
+                         "survivorship-online")
+        self.assertEqual(pfs.spec_group_from_job_name("offline-floristics-setup"), "setup")
+
     def test_plain_job_name(self):
         self.assertEqual(pfs.spec_group_from_job_name("cypress-offline-child"), "")
         self.assertEqual(pfs.spec_group_from_job_name("cypress-run 3/8"), "")
@@ -319,6 +326,94 @@ class PlannedOfflineSpecsTests(unittest.TestCase):
             raise subprocess.CalledProcessError(1, "glab")
         with patch.object(pfs, "fetch_repo_file", boom):
             self.assertEqual(pfs.planned_offline_specs("proj", "sha1", "1", ""), [])
+
+
+class IsCypressChildJobTests(unittest.TestCase):
+    """Offline node 1 runs as `offline-floristics-*` jobs; only their stage
+    (`test-cypress-offline`) says they are Cypress jobs."""
+
+    def test_node_1_chain_jobs_kept_by_stage(self):
+        for name in ("offline-floristics-setup", "offline-floristics-cover-fire", "offline-floristics-sync"):
+            self.assertTrue(pfs.is_cypress_child_job({"name": name, "stage": "test-cypress-offline"}), name)
+
+    def test_offline_stack_jobs_excluded(self):
+        self.assertFalse(pfs.is_cypress_child_job({"name": "deploy-offline-stack", "stage": "deploy-offline-stack"}))
+        self.assertFalse(pfs.is_cypress_child_job({"name": "teardown-offline-stack", "stage": "teardown-offline-stack"}))
+
+    def test_name_match_still_works_without_stage(self):
+        self.assertTrue(pfs.is_cypress_child_job({"name": "cypress-offline-child"}))
+
+
+class PlannedSpecsForJobTests(unittest.TestCase):
+    """An empty group makes the shard script return the whole node, which is
+    only right for the one-job-per-node `cypress-offline-child`."""
+
+    def plan(self, job):
+        calls = []
+
+        def recorder(proj, sha, node, group):
+            calls.append((node, group))
+            return ["x.cy.js"]
+        with patch.object(pfs, "planned_offline_specs", recorder):
+            return pfs.planned_specs_for_job("proj", "sha1", job), calls
+
+    def test_chain_job_uses_its_group(self):
+        result, calls = self.plan({"name": "offline-floristics-cover-fire", "_offline_node": "1"})
+        self.assertEqual(calls, [("1", "cover-fire")])
+        self.assertEqual(result, ["x.cy.js"])
+
+    def test_plain_offline_child_uses_whole_node(self):
+        _, calls = self.plan({"name": "cypress-offline-child", "_offline_node": "1"})
+        self.assertEqual(calls, [("1", "")])
+
+    def test_ungrouped_chain_job_is_not_guessed(self):
+        result, calls = self.plan({"name": "offline-floristics", "_offline_node": "1"})
+        self.assertEqual(result, [])
+        self.assertEqual(calls, [])
+
+    def test_parent_job_has_no_plan(self):
+        result, calls = self.plan({"name": "cypress-run 1/8"})
+        self.assertEqual(result, [])
+        self.assertEqual(calls, [])
+
+
+REAL_SHARD_SCRIPT = (Path(__file__).resolve().parent / "shard_script_dev_1_0_13.js").read_text()
+OFFLINE = "test/cypress/integration/offline"
+
+
+@unittest.skipUnless(shutil.which("node"), "node not installed")
+class PlannedOfflineSpecsRealScriptTests(unittest.TestCase):
+    """The real shard script reads CI_NODE_INDEX/SPEC_GROUP from the environment
+    and does not export sortOfflineSpecs."""
+
+    def setUp(self):
+        pfs._PLANNED_CACHE.clear()
+        self.addCleanup(pfs._PLANNED_CACHE.clear)
+
+    def planned(self, node, group):
+        with patch.object(pfs, "fetch_repo_file", lambda proj, path, ref: REAL_SHARD_SCRIPT):
+            return pfs.planned_offline_specs("proj", "sha1", node, group)
+
+    def test_real_script_node_1_group(self):
+        self.assertEqual(self.planned("1", "cover-fire"),
+                         [f"{OFFLINE}/offline-floristics-consumers-cover-fire.cy.js"])
+
+    def test_real_script_node_3_group(self):
+        self.assertEqual(self.planned("3", "qdaseq0009"),
+                         [f"{OFFLINE}/offline-acoustic.cy.js",
+                          f"{OFFLINE}/offline-partial-connection.cy.js",
+                          f"{OFFLINE}/offline-recruitment-survivorship.cy.js"])
+
+    def test_real_script_whole_node(self):
+        self.assertEqual(len(self.planned("1", "")), 7)
+        self.assertEqual(self.planned("4", ""),
+                         [f"{OFFLINE}/_summary-widgets.cy.js",
+                          f"{OFFLINE}/offline-floristics-and-dependencies-pro.cy.js"])
+
+    def test_real_script_unknown_group_degrades_to_empty(self):
+        with patch.object(sys, "stderr", io.StringIO()) as err:
+            self.assertEqual(self.planned("1", "no-such-group"), [])
+        self.assertIn('Unknown SPEC_GROUP "no-such-group"', err.getvalue())
 
 
 if __name__ == "__main__":
